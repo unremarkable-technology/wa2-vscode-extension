@@ -2,11 +2,15 @@
 # WA2 VS Code Extension (Early Preview)
 
 The **WA2 VS Code extension** provides **fast, workspace-aware validation**
-for CloudFormation templates inside VS Code.
+for CloudFormation templates inside VS Code, the vision being **an ultra-fast architecture guide inside your IDE**.
 
 This is an **early open-source prototype** focused on Phase 1 of the WA2
 project: a high-performance language server (LSP) that can analyse CloudFormation
-YAML/JSON and deliver near-instant diagnostics.
+YAML/JSON and deliver near-instant diagnostics. Rust is used for the language server to give low-latency validation even on very large CloudFormation workspaces - we intend to use
+time-budgets to ensure fast response, with any heavy work done only on idle.
+
+## Preview
+![Markdown Logo](assets/images/wa2.screenshot.png)
 
 ## ✨ Goals (Phase 1)
 
@@ -28,6 +32,13 @@ diagnostics. Structural parsing and fast-path validation are being added.
 
 This repository is being built over 45 days starting December 1, 2025.
 I was going to do 30 days, but I'm sure crimbo etc will get in the way ;-)
+
+## Supported file types
+
+Phase 1 focuses on CloudFormation templates written in:
+
+- `.yaml`/`.yml`
+- `.json`
 
 ## 🛠 How to build
 
@@ -61,6 +72,6 @@ CloudFormation YAML/JSON (L1)
 Minimal structural IR (L2)
 ```
 
-📦 License
+## 📦 License
 
 This project is released under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
