@@ -30,29 +30,14 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 
 	client = new LanguageClient(
-		'stackgraphLsp',
-		'StackGraph LSP',
-		serverOptions,
-		clientOptions
-	);
-
-	client = new LanguageClient(
-		'stackgraphLsp',
-		'StackGraph LSP',
+		'wa2lsp',
+		'WA2 LSP',
 		serverOptions,
 		clientOptions
 	);
 
 	// Start the client, but do NOT push the promise to subscriptions
 	client.start();
-
-	const disposable = vscode.commands.registerCommand(
-		'wa2.helloWorld',
-		() => {
-			vscode.window.showInformationMessage('WA2: hello from WA2');
-		}
-	);
-	context.subscriptions.push(disposable);
 
 	// Properly stop the client on extension deactivation
 	context.subscriptions.push({
