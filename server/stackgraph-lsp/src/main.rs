@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,8 @@ struct Backend {
 	client: Client,
 	docs: Arc<Mutex<HashMap<Url, DocumentState>>>,
 	notify: Arc<Notify>,
+	// atomic change marker so analysis can see if a new event arrived
+	generation: Arc<AtomicU64>,
 }
 
 #[tower_lsp::async_trait]
@@ -48,10 +51,11 @@ impl LanguageServer for Backend {
 		let client = self.client.clone();
 		let docs = self.docs.clone();
 		let notify = self.notify.clone();
+		let generation = self.generation.clone();
 
 		// listen for work via notify
 		tokio::spawn(async move {
-			analyser_loop(client, docs, notify).await;
+			analyser_loop(client, docs, notify, generation).await;
 		});
 	}
 
@@ -72,6 +76,9 @@ impl LanguageServer for Backend {
 			let mut docs = self.docs.lock().unwrap();
 			docs.insert(uri.clone(), DocumentState { text, dirty: true });
 		}
+
+		// bump generation so analysis can see a new event happened
+		self.generation.fetch_add(1, Ordering::Relaxed);
 
 		// tell background analyser there is work todo
 		self.notify.notify_one();
@@ -102,13 +109,14 @@ impl LanguageServer for Backend {
 			entry.dirty = true;
 		}
 
-		// tell background analyser trhere is work todo
+		// bump generation so analysis can see a new event happened
+		self.generation.fetch_add(1, Ordering::Relaxed);
+
+		// tell background analyser there is work todo
 		self.notify.notify_one();
 
-		// let message = format!("doc_change: {}", uri);
-		// self.client
-		// 	.log_message(MessageType::INFO, message)
-		// 	.await;
+		let message = format!("doc_change: {}", uri);
+		self.client.log_message(MessageType::INFO, message).await;
 	}
 
 	/// document saved, re-run analysis on save
@@ -124,7 +132,10 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		// tell background analyser trhere is work todo
+		// bump generation so analysis can see a new event happened
+		self.generation.fetch_add(1, Ordering::Relaxed);
+
+		// tell background analyser there is work todo
 		self.notify.notify_one();
 
 		let message = format!("doc_save: {}", uri);
@@ -141,12 +152,14 @@ async fn main() {
 	// list of docs and tasl notification
 	let docs = Arc::new(Mutex::new(HashMap::new()));
 	let notify = Arc::new(Notify::new());
+	let generation = Arc::new(AtomicU64::new(0));
 
 	// constructs our instance of the Backend
 	let (service, socket) = LspService::new(move |client| Backend {
 		client,
 		docs: docs.clone(),
 		notify: notify.clone(),
+		generation: generation.clone(),
 	});
 
 	// starts reading JSON RPC messages from stdin, replies to stdout
@@ -159,17 +172,36 @@ async fn analyser_loop(
 	client: Client,
 	docs: Arc<Mutex<HashMap<Url, DocumentState>>>,
 	notify: Arc<Notify>,
+	generation: Arc<AtomicU64>,
 ) {
-	let time_budget = Duration::from_millis(50);
+	const TIME_BUDGET: Duration = Duration::from_millis(50);
+	const IDLE_DELAY: Duration = Duration::from_millis(200);
 
 	loop {
 		// Wait until something changes
 		notify.notified().await;
 
-		// TECHDEBT: dumb debounce approach
-		// Debounce: small idle window for more edits
-		// we do this so we never slow the user
-		sleep(Duration::from_millis(200)).await;
+		// Snapshot the generation at the moment we noticed work.
+		let gen_at_start = generation.load(Ordering::Relaxed);
+
+		// Debounce: we use a restartable idle wait – if a new event
+		// arrives during this delay, we restart the loop and wait again.
+		tokio::select! {
+			_ = sleep(IDLE_DELAY) => {
+				// idle window elapsed; we'll double-check generation below
+			}
+			_ = notify.notified() => {
+				// another change arrived during debounce; restart the loop
+				// so the idle window is effectively reset
+				continue;
+			}
+		}
+
+		// If generation changed during the idle window, a newer event
+		// exists; restart and wait for the next idle gap.
+		if generation.load(Ordering::Relaxed) != gen_at_start {
+			continue;
+		}
 
 		let start = Instant::now();
 
@@ -187,8 +219,15 @@ async fn analyser_loop(
 		};
 
 		for uri in dirty_uris {
-			if start.elapsed() > time_budget {
+			// cooperative cancellation: stop if we ran out of time,
+			// or if a new user event happened since this pass started
+			if start.elapsed() > TIME_BUDGET {
 				// Out of time for this round; we'll pick up later
+				break;
+			}
+			if generation.load(Ordering::Relaxed) != gen_at_start {
+				// New event arrived; stop this pass early and let the
+				// next idle cycle handle updated state.
 				break;
 			}
 
@@ -212,7 +251,7 @@ async fn analyser_loop(
 async fn analyse_single_document(client: &Client, uri: Url, _text: String) {
 	let message = format!("analyse_document: {}", uri);
 	client.log_message(MessageType::INFO, message).await;
-	
+
 	// For now: just publish a simple warning to prove the loop runs.
 	let diag = Diagnostic {
 		range: Range {
