@@ -43,7 +43,7 @@ impl LanguageServer for Backend {
 		Ok(InitializeResult {
 			capabilities: ServerCapabilities {
 				text_document_sync: Some(TextDocumentSyncCapability::Kind(
-					TextDocumentSyncKind::INCREMENTAL,
+					TextDocumentSyncKind::FULL, // TECHDEBT: not efficient, ASSUME full text sync
 				)),
 				..ServerCapabilities::default()
 			},
@@ -103,7 +103,6 @@ impl LanguageServer for Backend {
 		let uri = params.text_document.uri;
 		let changes = params.content_changes;
 
-		// TECHDEBT: not efficient, ASSUME full text sync
 		// take the last change's text as the full document.
 		let new_text = changes.last().map(|c| c.text.clone()).unwrap_or_default();
 
@@ -171,7 +170,11 @@ async fn analyser_loop(
 	event_queue: Arc<Mutex<VecDeque<Url>>>,
 ) {
 	const TIME_BUDGET: Duration = Duration::from_millis(50);
-	const IDLE_DELAY: Duration = Duration::from_millis(200);
+	// we pick 2x the average inter-key interval (2 x 120 = 240)
+	// assumes programmers are fast typist, and when pausing for more
+	// than two IKIs they have probably stoppped, started thinking, etc
+	// https://userinterfaces.aalto.fi/136Mkeystrokes/resources/chi-18-analysis.pdf#:~:text=For%20fast%20typists,%20the%20average%20IKI%20is
+	const IDLE_DELAY: Duration = Duration::from_millis(240);
 
 	loop {
 		// Wait until something changes

@@ -46,29 +46,232 @@ impl CoreEngine {
 	/// later this becomes the real per-file analysis (parse, CFN checks, etc).
 	pub fn analyse_document_fast(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
 		let doc = self.docs.get(uri)?;
-		let _text = &doc.text;
+		let text = &doc.text;
 
-		let message = format!("WA2 analyse_document_fast: {uri}");
-
-		// For now: just publish a simple warning to prove the loop runs.
-		let diag = Diagnostic {
-			range: Range {
-				start: Position {
-					line: 0,
-					character: 0,
-				},
-				end: Position {
-					line: 0,
-					character: 1,
-				},
-			},
-			severity: Some(DiagnosticSeverity::WARNING),
-			code: Some(NumberOrString::String("WA2_TEST".into())),
-			source: Some("wa2-lsp".into()),
-			message: format!("{message} (analysis stub)"),
-			..Default::default()
+		// Decide file format based on extension. We treat:
+		//  - *.json as JSON
+		//  - *.yml / *.yaml as YAML
+		//  - everything else: default to YAML first (common for CFN), and
+		//    if that ever changes we can revisit.
+		let path = uri.path();
+		let diags = if path.ends_with(".json") {
+			self.analyse_json(uri, text)
+		} else if path.ends_with(".yml") || path.ends_with(".yaml") {
+			self.analyse_yaml(uri, text)
+		} else {
+			// default to YAML for now
+			self.analyse_yaml(uri, text)
 		};
 
-		Some(vec![diag])
+		Some(diags)
+	}
+
+	/// Analyse a document as YAML using serde_yaml.
+	/// For now, this only reports a parse error (if any).
+	fn analyse_yaml(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
+		match serde_yaml::from_str::<serde_yaml::Value>(text) {
+			Ok(_value) => {
+				// TODO: add structural CloudFormation checks here.
+				Vec::new()
+			}
+			Err(err) => {
+				// serde_yaml::Error may have a location (1-based line/col).
+				let (line, col) = match err.location() {
+					Some(loc) => {
+						// LSP positions are 0-based
+						(loc.line().saturating_sub(1), loc.column().saturating_sub(1))
+					}
+					None => (0, 0),
+				};
+
+				let range = Range {
+					start: Position {
+						line: line as u32,
+						character: col as u32,
+					},
+					end: Position {
+						line: line as u32,
+						character: (col + 1) as u32,
+					},
+				};
+
+				vec![Diagnostic {
+					range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_YAML_PARSE".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!("YAML parse error in {uri}: {err}"),
+					..Default::default()
+				}]
+			}
+		}
+	}
+
+	/// Analyse a document as JSON using serde_json.
+	/// For now, this only reports a parse error (if any).
+	fn analyse_json(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
+		match serde_json::from_str::<serde_json::Value>(text) {
+			Ok(_value) => {
+				// TODO: add structural CloudFormation checks here.
+				Vec::new()
+			}
+			Err(err) => {
+				// serde_json::Error exposes line/column (1-based).
+				let line = err.line().saturating_sub(1);
+				let col = err.column().saturating_sub(1);
+
+				let range = Range {
+					start: Position {
+						line: line as u32,
+						character: col as u32,
+					},
+					end: Position {
+						line: line as u32,
+						character: (col + 1) as u32,
+					},
+				};
+
+				vec![Diagnostic {
+					range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_JSON_PARSE".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!("JSON parse error in {uri}: {err}"),
+					..Default::default()
+				}]
+			}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use tower_lsp::lsp_types::DiagnosticSeverity;
+
+	fn uri(path: &str) -> Url {
+		Url::parse(path).expect("valid URI")
+	}
+
+	#[test]
+	fn yaml_valid_produces_no_diagnostics() {
+		let mut engine = CoreEngine::new();
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+
+		let diags = engine
+			.analyse_document_fast(&uri)
+			.expect("document should exist");
+
+		assert!(
+			diags.is_empty(),
+			"expected no diagnostics for valid YAML, got: {diags:?}"
+		);
+	}
+
+	#[test]
+	fn yaml_invalid_produces_parse_error() {
+		let mut engine = CoreEngine::new();
+		let uri = uri("file:///tmp/test.yaml");
+
+		// missing closing quote → invalid YAML
+		let text = r#"Name: "abc"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+
+		let diags = engine
+			.analyse_document_fast(&uri)
+			.expect("document should exist");
+
+		assert_eq!(diags.len(), 1, "expected a single YAML parse error");
+		let d = &diags[0];
+
+		assert_eq!(
+			d.severity,
+			Some(DiagnosticSeverity::ERROR),
+			"expected ERROR severity"
+		);
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String("WA2_YAML_PARSE".into())),
+			"expected YAML parse error code"
+		);
+		assert!(
+			d.message.contains("YAML parse error"),
+			"unexpected message: {}",
+			d.message
+		);
+	}
+
+	#[test]
+	fn json_valid_produces_no_diagnostics() {
+		let mut engine = CoreEngine::new();
+		let uri = uri("file:///tmp/test.json");
+
+		let text = r#"
+{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket"
+    }
+  }
+}
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+
+		let diags = engine
+			.analyse_document_fast(&uri)
+			.expect("document should exist");
+
+		assert!(
+			diags.is_empty(),
+			"expected no diagnostics for valid JSON, got: {diags:?}"
+		);
+	}
+
+	#[test]
+	fn json_invalid_produces_parse_error() {
+		let mut engine = CoreEngine::new();
+		let uri = uri("file:///tmp/test.json");
+
+		// trailing comma → invalid JSON
+		let text = r#"
+{
+  "Name": "abc",
+}
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+
+		let diags = engine
+			.analyse_document_fast(&uri)
+			.expect("document should exist");
+
+		assert_eq!(diags.len(), 1, "expected a single JSON parse error");
+		let d = &diags[0];
+
+		assert_eq!(
+			d.severity,
+			Some(DiagnosticSeverity::ERROR),
+			"expected ERROR severity"
+		);
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String("WA2_JSON_PARSE".into())),
+			"expected JSON parse error code"
+		);
+		assert!(
+			d.message.contains("JSON parse error"),
+			"unexpected message: {}",
+			d.message
+		);
 	}
 }
