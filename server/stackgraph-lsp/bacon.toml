@@ -1,0 +1,4 @@
+default_job = "build"
+
+[jobs.build]
+command = ["cargo", "build", "--release"]

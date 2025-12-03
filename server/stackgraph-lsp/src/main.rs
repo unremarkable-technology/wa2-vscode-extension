@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,17 +9,31 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-struct DocumentState {
-	text: String,
-	dirty: bool,
-}
+mod core_engine;
+use core_engine::CoreEngine;
 
+/// backend: LSP-facing adapter that holds the engine and schedules work
 struct Backend {
 	client: Client,
-	docs: Arc<Mutex<HashMap<Url, DocumentState>>>,
+	engine: Arc<Mutex<CoreEngine>>,
 	notify: Arc<Notify>,
-	// atomic change marker so analysis can see if a new event arrived
-	generation: Arc<AtomicU64>,
+	// queue of events (generation, uri); multiple entries for the same uri
+	// are coalesced by the analyser loop.
+	event_queue: Arc<Mutex<VecDeque<Url>>>,
+}
+
+impl Backend {
+	/// bump generation, enqueue an event for this uri, and notify the analyser
+	fn enqueue_event(&self, uri: &Url) {
+		// enqueue this event for the analyser
+		{
+			let mut queue = self.event_queue.lock().unwrap();
+			queue.push_back(uri.clone());
+		}
+
+		// tell background analyser there is work todo
+		self.notify.notify_one();
+	}
 }
 
 #[tower_lsp::async_trait]
@@ -49,13 +62,13 @@ impl LanguageServer for Backend {
 
 		// clone the arcs protecting resources
 		let client = self.client.clone();
-		let docs = self.docs.clone();
+		let engine = self.engine.clone();
 		let notify = self.notify.clone();
-		let generation = self.generation.clone();
+		let event_queue = self.event_queue.clone();
 
 		// listen for work via notify
 		tokio::spawn(async move {
-			analyser_loop(client, docs, notify, generation).await;
+			analyser_loop(client, engine, notify, event_queue).await;
 		});
 	}
 
@@ -71,17 +84,14 @@ impl LanguageServer for Backend {
 		let uri = params.text_document.uri;
 		let text = params.text_document.text;
 
-		// locking docs to add
+		// forward to core engine (under lock)
 		{
-			let mut docs = self.docs.lock().unwrap();
-			docs.insert(uri.clone(), DocumentState { text, dirty: true });
+			let mut engine = self.engine.lock().unwrap();
+			engine.on_open(uri.clone(), text);
 		}
 
-		// bump generation so analysis can see a new event happened
-		self.generation.fetch_add(1, Ordering::Relaxed);
-
-		// tell background analyser there is work todo
-		self.notify.notify_one();
+		// enqueue analysis event
+		self.enqueue_event(&uri);
 
 		let message = format!("doc_open: {}", uri);
 		self.client.log_message(MessageType::INFO, message).await;
@@ -97,23 +107,14 @@ impl LanguageServer for Backend {
 		// take the last change's text as the full document.
 		let new_text = changes.last().map(|c| c.text.clone()).unwrap_or_default();
 
-		// locking docs to update
+		// forward to core engine (under lock)
 		{
-			let mut docs = self.docs.lock().unwrap();
-			let entry = docs.entry(uri.clone()).or_insert(DocumentState {
-				text: String::new(),
-				dirty: false,
-			});
-
-			entry.text = new_text;
-			entry.dirty = true;
+			let mut engine = self.engine.lock().unwrap();
+			engine.on_change(uri.clone(), new_text);
 		}
 
-		// bump generation so analysis can see a new event happened
-		self.generation.fetch_add(1, Ordering::Relaxed);
-
-		// tell background analyser there is work todo
-		self.notify.notify_one();
+		// enqueue analysis event
+		self.enqueue_event(&uri);
 
 		let message = format!("doc_change: {}", uri);
 		self.client.log_message(MessageType::INFO, message).await;
@@ -124,19 +125,14 @@ impl LanguageServer for Backend {
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		let uri = params.text_document.uri;
 
-		// locking docs to update
+		// forward to core engine (under lock)
 		{
-			let mut docs = self.docs.lock().unwrap();
-			if let Some(doc) = docs.get_mut(&uri) {
-				doc.dirty = true;
-			}
+			let mut engine = self.engine.lock().unwrap();
+			engine.on_save(&uri);
 		}
 
-		// bump generation so analysis can see a new event happened
-		self.generation.fetch_add(1, Ordering::Relaxed);
-
-		// tell background analyser there is work todo
-		self.notify.notify_one();
+		// enqueue analysis event
+		self.enqueue_event(&uri);
 
 		let message = format!("doc_save: {}", uri);
 		self.client.log_message(MessageType::INFO, message).await;
@@ -149,17 +145,17 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
-	// list of docs and tasl notification
-	let docs = Arc::new(Mutex::new(HashMap::new()));
+	// core engine, task notification and atomic generation counter
+	let engine = Arc::new(Mutex::new(CoreEngine::new()));
 	let notify = Arc::new(Notify::new());
-	let generation = Arc::new(AtomicU64::new(0));
+	let event_queue: Arc<Mutex<VecDeque<Url>>> = Arc::new(Mutex::new(VecDeque::new()));
 
 	// constructs our instance of the Backend
 	let (service, socket) = LspService::new(move |client| Backend {
 		client,
-		docs: docs.clone(),
+		engine: engine.clone(),
 		notify: notify.clone(),
-		generation: generation.clone(),
+		event_queue: event_queue.clone(),
 	});
 
 	// starts reading JSON RPC messages from stdin, replies to stdout
@@ -170,9 +166,9 @@ async fn main() {
 /// changes that require us to analyse again
 async fn analyser_loop(
 	client: Client,
-	docs: Arc<Mutex<HashMap<Url, DocumentState>>>,
+	engine: Arc<Mutex<CoreEngine>>,
 	notify: Arc<Notify>,
-	generation: Arc<AtomicU64>,
+	event_queue: Arc<Mutex<VecDeque<Url>>>,
 ) {
 	const TIME_BUDGET: Duration = Duration::from_millis(50);
 	const IDLE_DELAY: Duration = Duration::from_millis(200);
@@ -181,95 +177,60 @@ async fn analyser_loop(
 		// Wait until something changes
 		notify.notified().await;
 
-		// Snapshot the generation at the moment we noticed work.
-		let gen_at_start = generation.load(Ordering::Relaxed);
-
-		// Debounce: we use a restartable idle wait – if a new event
-		// arrives during this delay, we restart the loop and wait again.
-		tokio::select! {
-			_ = sleep(IDLE_DELAY) => {
-				// idle window elapsed; we'll double-check generation below
-			}
-			_ = notify.notified() => {
-				// another change arrived during debounce; restart the loop
-				// so the idle window is effectively reset
-				continue;
-			}
-		}
-
-		// If generation changed during the idle window, a newer event
-		// exists; restart and wait for the next idle gap.
-		if generation.load(Ordering::Relaxed) != gen_at_start {
-			continue;
-		}
+		// Debounce: wait for an idle gap so that multiple quick edits
+		// can be coalesced into a single analysis pass.
+		sleep(IDLE_DELAY).await;
 
 		let start = Instant::now();
 
-		// Take a snapshot of dirty URIs so we hold the lock briefly
-		let dirty_uris: Vec<Url> = {
-			let docs_guard = docs.lock().unwrap();
-			docs_guard
-				.iter()
-				.filter_map(
-					|(uri, state)| {
-						if state.dirty { Some(uri.clone()) } else { None }
-					},
-				)
-				.collect()
-		};
-
-		for uri in dirty_uris {
-			// cooperative cancellation: stop if we ran out of time,
-			// or if a new user event happened since this pass started
+		loop {
 			if start.elapsed() > TIME_BUDGET {
-				// Out of time for this round; we'll pick up later
-				break;
-			}
-			if generation.load(Ordering::Relaxed) != gen_at_start {
-				// New event arrived; stop this pass early and let the
-				// next idle cycle handle updated state.
+				let message = "analyser_loop: TIME_BUDGET exhausted".to_string();
+				client.log_message(MessageType::INFO, message).await;
 				break;
 			}
 
-			// Snapshot the current text and mark clean
-			let text = {
-				let mut docs_guard = docs.lock().unwrap();
-				if let Some(state) = docs_guard.get_mut(&uri) {
-					state.dirty = false;
-					state.text.clone()
-				} else {
-					continue;
-				}
+			// Pop one event from the front of the queue. If the queue is
+			// empty, we're done for this pass.
+			let maybe_event = {
+				let mut queue = event_queue.lock().unwrap();
+				queue.pop_front()
 			};
 
-			analyse_single_document(&client, uri.clone(), text).await;
+			let uri = match maybe_event {
+				Some(ev) => ev,
+				None => break, // no more work this pass
+			};
+
+			// Coalesce: remove any remaining events for this uri from the
+			// queue. We consider them "covered" by this analysis run.
+			{
+				let mut queue = event_queue.lock().unwrap();
+				queue.retain(|u| u != &uri);
+			}
+
+			// Analyse this uri using the latest text snapshot. We treat
+			// "no text" as a processed event (doc was closed / removed).
+			let diagnostics = {
+				let engine_guard = engine.lock().unwrap();
+				engine_guard.analyse_document_fast(&uri)
+			};
+
+			match diagnostics {
+				Some(diagnostics) => {
+					let message = format!("doc_analyse: {}", uri);
+					client.log_message(MessageType::INFO, message).await;
+
+					client
+						.publish_diagnostics(uri.clone(), diagnostics, None)
+						.await;
+				}
+				None => {
+					let message = format!("doc_analyse: {} (skipped, no text in engine)", uri);
+					client.log_message(MessageType::INFO, message).await;
+					continue;
+				}
+			}
 		}
 	}
-}
-
-/// requested to analyse a document in isolation
-async fn analyse_single_document(client: &Client, uri: Url, _text: String) {
-	let message = format!("analyse_document: {}", uri);
-	client.log_message(MessageType::INFO, message).await;
-
-	// For now: just publish a simple warning to prove the loop runs.
-	let diag = Diagnostic {
-		range: Range {
-			start: Position {
-				line: 0,
-				character: 0,
-			},
-			end: Position {
-				line: 0,
-				character: 1,
-			},
-		},
-		severity: Some(DiagnosticSeverity::WARNING),
-		code: Some(NumberOrString::String("WA2_TEST".into())),
-		source: Some("wa2-lsp".into()),
-		message: "WA2 analysis stub ran (analyse warning)".into(),
-		..Default::default()
-	};
-
-	client.publish_diagnostics(uri, vec![diag], None).await;
 }
