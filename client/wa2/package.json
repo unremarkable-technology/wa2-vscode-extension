@@ -4,16 +4,17 @@
 	"description": "Well-Architected 2 features, including cross-stack validation for CloudFormation",
 	"version": "0.0.1",
 	"engines": {
-		"vscode": "^1.106.1"
+		"vscode": "^1.95.0"
 	},
-	"publisher": "FigmentEngine",
+	"publisher": "FigmentEngineLtd",
 	"categories": [
-		"Other"
+		"Programming Languages",
+		"Linters"
 	],
-	"activationEvents": [
-		"onLanguage:yaml",
-		"onLanguage:json"
-	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/unremarkable-technology/wa2-vscode-extension"
+	},
 	"main": "./out/extension.js",
 	"scripts": {
 		"vscode:prepublish": "npm run compile",
@@ -26,7 +27,7 @@
 	"devDependencies": {
 		"@types/mocha": "^10.0.10",
 		"@types/node": "22.x",
-		"@types/vscode": "^1.106.1",
+		"@types/vscode": "^1.95.0",
 		"@vscode/test-cli": "^0.0.12",
 		"@vscode/test-electron": "^2.5.2",
 		"eslint": "^9.39.1",
@@ -35,5 +36,32 @@
 	},
 	"dependencies": {
 		"vscode-languageclient": "^9.0.1"
+	},
+	"contributes": {
+		"languages": [
+			{
+				"id": "cloudformation-yaml",
+				"aliases": [
+					"CloudFormation (YAML)",
+					"cfn-yaml"
+				],
+				"extensions": [
+					".yaml",
+					".yml"
+				],
+				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "cloudformation-json",
+				"aliases": [
+					"CloudFormation (JSON)",
+					"cfn-json"
+				],
+				"extensions": [
+					".json"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		]
 	}
 }

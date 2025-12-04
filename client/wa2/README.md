@@ -1,71 +1,48 @@
-# wa2 README
+# WA2 — CloudFormation Fast Linting & Cross-Stack Foundations (Preview)
 
-This is the README for your extension "wa2". After writing up a brief description, we recommend including the following sections.
+The **WA2 VS Code extension** provides an **ultra-fast, workspace-aware CloudFormation validator** powered by a Rust language server (`wa2lsp`).  
+It performs real-time checks as you type — catching structural problems long before deployment.
 
-## Features
-
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
-
-For example if there is an image subfolder under your extension project workspace:
-
-\!\[feature X\]\(images/feature-x.png\)
-
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
-
-## Requirements
-
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+This early preview focuses on the *fast-path engine*: instant YAML/JSON parsing and foundational template checks.
 
 ---
 
-## Following extension guidelines
+## ✨ Features (Preview)
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+- **Real-time diagnostics** for CloudFormation-style YAML & JSON  
+- **Ultra-fast Rust LSP** (written in Rust, non-blocking design)  
+- **Background validation** with strict time budgeting  
+- **Parse error detection** for YAML/JSON  
+- **CloudFormation structural checks**, including:
+  - Missing top-level `Resources` section
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+More checks will roll out as the underlying engine develops.
 
-## Working with Markdown
+---
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+## 🚀 Getting Started
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+### 1. Install the WA2 language server (`wa2lsp`)
 
-## For more information
+You need Rust installed (`rustup`), then install the LSP from this repository:
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+```bash
+git clone https://github.com/unremarkable-technology/wa2-vscode-extension
+cd wa2-vscode-extension
+cargo install --path server/wa2lsp
+```
 
-**Enjoy!**
+### 2. Install the WA2 VS Code extension
+
+If you have a packaged `.vsix`, install it via:
+VS Code → Extensions → … → Install from VSIX
+
+Once installed:
+* Open any CloudFormation-style YAML or JSON file.
+* Type something invalid.
+* Diagnostics should appear instantly.
+
+# ⚙ Requirements
+* VS Code ≥ 1.95
+* Rust toolchain (stable)
+* wa2lsp must be on your system PATH

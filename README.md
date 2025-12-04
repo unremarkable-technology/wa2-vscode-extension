@@ -27,11 +27,11 @@ introducing any higher-level semantics yet.
 
 ## 🚧 Current Status
 
-The extension successfully starts a custom LSP server and returns basic test
-diagnostics. Structural parsing and fast-path validation are being added.
+The extension launches a custom Rust LSP (`wa2lsp`) and returns real-time diagnostics.  
+Initial structural checks — including YAML/JSON parsing and basic CloudFormation shape validation — are implemented.
 
-This repository is being built over 45 days starting December 1, 2025.
-I was going to do 30 days, but I'm sure crimbo etc will get in the way ;-)
+This repository is being built over **45 days**, starting December 1, 2025.  
+(Originally 30 days… but let’s be honest, December is December! 😊)
 
 ## Supported file types
 
@@ -44,12 +44,23 @@ Phase 1 focuses on CloudFormation templates written in:
 
 ### 1. Build the LSP server
 
+From the repository root:
+
 ```bash
-cd server/stackgraph-lsp
-cargo build --release
+git clone https://github.com/unremarkable-technology/wa2-vscode-extension
+cd wa2-vscode-extension
+cargo install --path server/wa2lsp
 ```
 
-Ensure the resulting binary (stackgraph-lsp) is on your $PATH.
+This installs the wa2lsp binary into your Cargo bin directory (typically ~/.cargo/bin), which should already be on your PATH.
+
+Verify:
+
+```bash
+wa2lsp --version
+```
+
+Ensure the resulting binary (wa2lsp) is on your $PATH.
 
 ### 2. Run the extension
 ```bash
@@ -71,6 +82,7 @@ CloudFormation YAML/JSON (L1)
       ⬇ builds
 Minimal structural IR (L2)
 ```
+The LSP executes fast-path analysis under strict time budgets, ensuring the editor stays snappy.
 
 ## 📦 License
 

@@ -9,20 +9,18 @@ import {
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-	// For now assume 'stackgraph-lsp' is on PATH.
-	// Later you can make this configurable.
-	const serverCommand = 'stackgraph-lsp';
+	// For now assume 'wa2lsp' is on PATH.
+	const serverCommand = 'wa2lsp';
 
 	const serverOptions: ServerOptions = {
 		command: serverCommand,
-		args: [],
+		args: ['--serve'],
 	};
 
 	const clientOptions: LanguageClientOptions = {
-		// We start the server for YAML and JSON files
 		documentSelector: [
-			{ language: 'yaml', scheme: 'file' },
-			{ language: 'json', scheme: 'file' },
+			{ language: 'cloudformation-yaml', scheme: 'file' },
+			{ language: 'cloudformation-json', scheme: 'file' },
 		],
 		synchronize: {
 			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{yml,yaml,json}'),

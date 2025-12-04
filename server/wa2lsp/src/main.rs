@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::{env, process};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -144,6 +145,42 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
+    let mut args = env::args().skip(1);
+
+    match args.next().as_deref() {
+        Some("--serve") => {
+            // Normal LSP mode: used by VS Code
+            run_lsp().await;
+        }
+        Some("--version") | Some("-V") => {
+            println!("wa2lsp {}", env!("CARGO_PKG_VERSION"));
+        }
+        Some("--help") | Some("-h") => {
+            eprintln!(
+                "wa2lsp - WA2 Language Server\n\n\
+                 Usage:\n  wa2lsp --serve      Start the LSP server on stdin/stdout\n  wa2lsp --version   Show version\n  wa2lsp --help      Show this help"
+            );
+        }
+        Some(other) => {
+            eprintln!(
+                "wa2lsp: unrecognised argument '{}'\n\
+                 Try 'wa2lsp --help' for usage.",
+                other
+            );
+            process::exit(2);
+        }
+        None => {
+            eprintln!(
+                "wa2lsp: no arguments provided.\n\
+                 Usage: wa2lsp --serve\n\
+                 For more options, run: wa2lsp --help"
+            );
+            process::exit(1);
+        }
+    }
+}
+
+async fn run_lsp() {
 	// core engine, task notification and atomic generation counter
 	let engine = Arc::new(Mutex::new(CoreEngine::new()));
 	let notify = Arc::new(Notify::new());
@@ -187,8 +224,28 @@ async fn analyser_loop(
 		let start = Instant::now();
 
 		loop {
+			/* TECHDEBT: we exceed our budget, rather than avoiding that.
+			 * we should know how long a task takes, and exit if we don't
+			 * have sufficient time to execute it this time.
+			 * this also implies no task is allowed which requires > TIME_BUDGET
+			 */
+			// we have run out of time, need to wait until next cycle
 			if start.elapsed() > TIME_BUDGET {
-				let message = "analyser_loop: TIME_BUDGET exhausted".to_string();
+				// If there's still work left in the queue, schedule another
+				// pass before we go back to waiting on notify. This ensures
+				// leftover events are eventually processed even if no new
+				// edits arrive.
+				let has_remaining_work = {
+					let queue = event_queue.lock().unwrap();
+					!queue.is_empty()
+				};
+				if has_remaining_work {
+					notify.notify_one();
+				}
+
+				let used_ms = start.elapsed().as_millis();
+				let message = format!("analyser_loop: TIME_BUDGET exhausted {}ms vs {}ms", 
+					used_ms, TIME_BUDGET.as_millis());
 				client.log_message(MessageType::INFO, message).await;
 				break;
 			}

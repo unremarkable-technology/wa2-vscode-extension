@@ -67,12 +67,51 @@ impl CoreEngine {
 	}
 
 	/// Analyse a document as YAML using serde_yaml.
-	/// For now, this only reports a parse error (if any).
+	/// For now:
+	///   - on parse error: report a WA2_YAML_PARSE error
+	///   - on success: warn if there is no top-level `Resources` key
 	fn analyse_yaml(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
 		match serde_yaml::from_str::<serde_yaml::Value>(text) {
-			Ok(_value) => {
-				// TODO: add structural CloudFormation checks here.
-				Vec::new()
+			Ok(value) => {
+				let mut diags = Vec::new();
+
+				// CloudFormation templates are expected to be mappings with a
+				// top-level `Resources` key in most real-world cases.
+				let has_resources = match value {
+					serde_yaml::Value::Mapping(ref map) => map
+						.keys()
+						.any(|k| matches!(k, serde_yaml::Value::String(s) if s == "Resources")),
+					_ => false,
+				};
+
+				if !has_resources {
+					// We don't know the exact location of "Resources" (it doesn't
+					// exist), so we attach this to the very start of the file.
+					let range = Range {
+						start: Position {
+							line: 0,
+							character: 0,
+						},
+						end: Position {
+							line: 0,
+							character: 1,
+						},
+					};
+
+					diags.push(Diagnostic {
+						range,
+						severity: Some(DiagnosticSeverity::WARNING),
+						code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"YAML template {uri} has no top-level `Resources` section; \
+                         most CloudFormation templates define at least one resource."
+						),
+						..Default::default()
+					});
+				}
+
+				diags
 			}
 			Err(err) => {
 				// serde_yaml::Error may have a location (1-based line/col).
@@ -108,12 +147,45 @@ impl CoreEngine {
 	}
 
 	/// Analyse a document as JSON using serde_json.
-	/// For now, this only reports a parse error (if any).
+	/// For now:
+	///   - on parse error: report a WA2_JSON_PARSE error
+	///   - on success: warn if there is no top-level `Resources` key
 	fn analyse_json(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
 		match serde_json::from_str::<serde_json::Value>(text) {
-			Ok(_value) => {
-				// TODO: add structural CloudFormation checks here.
-				Vec::new()
+			Ok(value) => {
+				let mut diags = Vec::new();
+
+				let has_resources = match value {
+					serde_json::Value::Object(ref map) => map.contains_key("Resources"),
+					_ => false,
+				};
+
+				if !has_resources {
+					let range = Range {
+						start: Position {
+							line: 0,
+							character: 0,
+						},
+						end: Position {
+							line: 0,
+							character: 1,
+						},
+					};
+
+					diags.push(Diagnostic {
+						range,
+						severity: Some(DiagnosticSeverity::WARNING),
+						code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"JSON template {uri} has no top-level `Resources` section; \
+                         most CloudFormation templates define at least one resource."
+						),
+						..Default::default()
+					});
+				}
+
+				diags
 			}
 			Err(err) => {
 				// serde_json::Error exposes line/column (1-based).
@@ -272,6 +344,80 @@ Resources:
 			d.message.contains("JSON parse error"),
 			"unexpected message: {}",
 			d.message
+		);
+	}
+
+	#[test]
+	fn yaml_missing_resources_produces_warning() {
+		let mut engine = CoreEngine::new();
+		let uri = uri("file:///tmp/no-resources.yaml");
+
+		let text = r#"
+Parameters:
+  Env:
+    Type: String
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+
+		let diags = engine
+			.analyse_document_fast(&uri)
+			.expect("document should exist");
+
+		assert_eq!(
+			diags.len(),
+			1,
+			"expected a single warning for missing Resources, got: {diags:?}"
+		);
+		let d = &diags[0];
+
+		assert_eq!(
+			d.severity,
+			Some(DiagnosticSeverity::WARNING),
+			"expected WARNING severity"
+		);
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+			"expected WA2_CFN_RESOURCES_MISSING code"
+		);
+	}
+
+	#[test]
+	fn json_missing_resources_produces_warning() {
+		let mut engine = CoreEngine::new();
+		let uri = uri("file:///tmp/no-resources.json");
+
+		let text = r#"
+{
+  "Parameters": {
+    "Env": { "Type": "String" }
+  }
+}
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+
+		let diags = engine
+			.analyse_document_fast(&uri)
+			.expect("document should exist");
+
+		assert_eq!(
+			diags.len(),
+			1,
+			"expected a single warning for missing Resources, got: {diags:?}"
+		);
+		let d = &diags[0];
+
+		assert_eq!(
+			d.severity,
+			Some(DiagnosticSeverity::WARNING),
+			"expected WARNING severity"
+		);
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+			"expected WA2_CFN_RESOURCES_MISSING code"
 		);
 	}
 }
