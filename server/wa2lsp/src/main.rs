@@ -1,7 +1,7 @@
 use std::{env, process};
 use tokio::io::{stdin, stdout};
 use tower_lsp::{LspService, Server};
-use wa2lsp::server::Backend;
+use wa2lsp::backend::Backend;
 
 #[tokio::main]
 async fn main() {

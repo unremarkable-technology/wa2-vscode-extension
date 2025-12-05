@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
+
+use crate::spec::spec_store::{PropertyName, ResourceTypeId, SpecStore};
 
 /// per-document state held by the core engine
 struct DocumentState {
@@ -12,6 +14,13 @@ struct DocumentState {
 /// unit-tested without async or JSON-RPC
 pub struct CoreEngine {
 	docs: HashMap<Url, DocumentState>,
+	spec: Option<Arc<SpecStore>>,
+}
+
+impl Default for CoreEngine {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl CoreEngine {
@@ -19,7 +28,18 @@ impl CoreEngine {
 	pub fn new() -> Self {
 		Self {
 			docs: HashMap::new(),
+			spec: None,
 		}
+	}
+
+	/// Inject the global SpecStore once it is loaded.
+	pub fn set_spec_store(&mut self, spec: Arc<SpecStore>) {
+		self.spec = Some(spec);
+	}
+
+	/// Accessor for analysis helpers.
+	pub fn spec_store(&self) -> Option<&SpecStore> {
+		self.spec.as_deref()
 	}
 
 	/// event: new document opened with full text
@@ -109,6 +129,11 @@ impl CoreEngine {
 						),
 						..Default::default()
 					});
+				}
+
+				// if we have a loaded SpecStore, do spec-based validation.
+				if let Some(spec) = self.spec_store() {
+					self.check_cfn_yaml_with_spec(uri, &value, spec, &mut diags);
 				}
 
 				diags
@@ -211,6 +236,233 @@ impl CoreEngine {
 					message: format!("JSON parse error in {uri}: {err}"),
 					..Default::default()
 				}]
+			}
+		}
+	}
+
+	/// Perform simple CloudFormation-aware checks using the loaded SpecStore:
+	///  - unknown resource types
+	///  - unknown properties
+	///  - missing required properties
+	///
+	/// For now we don't have per-node spans from serde_yaml, so we attach
+	/// diagnostics to the start of the file and include IDs in the message.
+	fn check_cfn_yaml_with_spec(
+		&self,
+		uri: &Url,
+		root: &serde_yaml::Value,
+		spec: &SpecStore,
+		diags: &mut Vec<Diagnostic>,
+	) {
+		let root_map = match root {
+			serde_yaml::Value::Mapping(m) => m,
+			_ => return,
+		};
+
+		let resources_val = match root_map.get(serde_yaml::Value::String("Resources".into())) {
+			Some(v) => v,
+			None => return,
+		};
+
+		let resources_map = match resources_val {
+			serde_yaml::Value::Mapping(m) => m,
+			_ => return,
+		};
+
+		// Reusable "file start" range for now.
+		let file_start = Range {
+			start: Position {
+				line: 0,
+				character: 0,
+			},
+			end: Position {
+				line: 0,
+				character: 1,
+			},
+		};
+
+		for (logical_key, resource_val) in resources_map {
+			let logical_id = match logical_key {
+				serde_yaml::Value::String(s) => s.as_str(),
+				_ => {
+					diags.push(Diagnostic {
+						range: file_start,
+						severity: Some(DiagnosticSeverity::WARNING),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_RESOURCE_KEY_NOT_STRING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"YAML template {uri}: resource key is not a string; \
+                             CloudFormation logical IDs must be strings."
+						),
+						..Default::default()
+					});
+					continue;
+				}
+			};
+
+			let resource_map = match resource_val {
+				serde_yaml::Value::Mapping(m) => m,
+				_ => {
+					diags.push(Diagnostic {
+                        range: file_start,
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        code: Some(NumberOrString::String(
+                            "WA2_CFN_RESOURCE_NOT_MAPPING".into(),
+                        )),
+                        source: Some("wa2-lsp".into()),
+                        message: format!(
+                            "YAML template {uri}: resource `{logical_id}` is not a mapping; \
+                             CloudFormation resources must be mappings with `Type` and `Properties`."
+                        ),
+                        ..Default::default()
+                    });
+					continue;
+				}
+			};
+
+			// Extract Type
+			let type_str = match resource_map.get(serde_yaml::Value::String("Type".into())) {
+				Some(serde_yaml::Value::String(s)) => s.as_str(),
+				Some(_) => {
+					diags.push(Diagnostic {
+						range: file_start,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_RESOURCE_TYPE_NOT_STRING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"YAML template {uri}: resource `{logical_id}` has a non-string `Type` value."
+						),
+						..Default::default()
+					});
+					continue;
+				}
+				None => {
+					diags.push(Diagnostic {
+						range: file_start,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_RESOURCE_TYPE_MISSING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"YAML template {uri}: resource `{logical_id}` is missing required `Type`."
+						),
+						..Default::default()
+					});
+					continue;
+				}
+			};
+
+			let type_id = ResourceTypeId(type_str.to_string());
+
+			let rt = match spec.resource_types.get(&type_id) {
+				Some(rt) => rt,
+				None => {
+					diags.push(Diagnostic {
+						range: file_start,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_UNKNOWN_RESOURCE_TYPE".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"YAML template {uri}: resource `{logical_id}` uses unknown resource type `{type_str}`."
+						),
+						..Default::default()
+					});
+					continue;
+				}
+			};
+
+			// Extract Properties mapping, if present.
+			let props_val = resource_map.get(serde_yaml::Value::String("Properties".into()));
+
+			let props_map = match props_val {
+				Some(serde_yaml::Value::Mapping(m)) => Some(m),
+				Some(_) => {
+					diags.push(Diagnostic {
+						range: file_start,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_PROPERTIES_NOT_MAPPING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"YAML template {uri}: resource `{logical_id}` has a non-mapping `Properties` value."
+						),
+						..Default::default()
+					});
+					None
+				}
+				None => None,
+			};
+
+			// 1) Unknown properties
+			if let Some(props) = props_map {
+				for (prop_key, _prop_val) in props {
+					let prop_name_str = match prop_key {
+						serde_yaml::Value::String(s) => s.as_str(),
+						_ => {
+							diags.push(Diagnostic {
+								range: file_start,
+								severity: Some(DiagnosticSeverity::WARNING),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_PROPERTY_KEY_NOT_STRING".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message: format!(
+									"YAML template {uri}: resource `{logical_id}` has a property key \
+                                     that is not a string; property names must be strings."
+								),
+								..Default::default()
+							});
+							continue;
+						}
+					};
+
+					let prop_id = PropertyName(prop_name_str.to_string());
+
+					if !rt.properties.contains_key(&prop_id) {
+						diags.push(Diagnostic {
+							range: file_start,
+							severity: Some(DiagnosticSeverity::WARNING),
+							code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into())),
+							source: Some("wa2-lsp".into()),
+							message: format!(
+								"YAML template {uri}: resource `{logical_id}` of type `{type_str}` \
+                                 has unknown property `{prop_name_str}`."
+							),
+							..Default::default()
+						});
+					}
+				}
+			}
+
+			// 2) Missing required properties
+			if let Some(props) = props_map {
+				for (pname, _pshape) in rt.properties.iter().filter(|(_, s)| s.required) {
+					let required_key = serde_yaml::Value::String(pname.0.clone());
+					if !props.contains_key(&required_key) {
+						diags.push(Diagnostic {
+							range: file_start,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_REQUIRED_PROPERTY_MISSING".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message: format!(
+								"YAML template {uri}: resource `{logical_id}` of type `{type_str}` \
+                                 is missing required property `{}`.",
+								pname.0
+							),
+							..Default::default()
+						});
+					}
+				}
 			}
 		}
 	}

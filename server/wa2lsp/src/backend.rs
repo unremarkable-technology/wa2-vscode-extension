@@ -2,14 +2,15 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::io::{stdin, stdout};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tower_lsp::{Client, LanguageServer};
 
 use crate::core_engine::CoreEngine;
+use crate::spec::spec_cache::SpecCacheManager;
+use crate::spec::spec_source::SpecSource;
 
 /// backend: LSP-facing adapter that holds the engine and schedules work
 pub struct Backend {
@@ -80,6 +81,67 @@ impl LanguageServer for Backend {
 		let engine = self.engine.clone();
 		let notify = self.notify.clone();
 		let event_queue = self.event_queue.clone();
+
+		// kick off spec loading in background.
+		{
+			let client = client.clone();
+			let engine = engine.clone();
+
+			tokio::spawn(async move {
+				// Simple region choice for now; you can make this configurable later.
+				let region = "eu-west-2"; // London, matches your TZ / likely usage.
+
+				let source = match SpecSource::for_region(region) {
+					Ok(s) => s,
+					Err(err) => {
+						client
+							.log_message(
+								MessageType::ERROR,
+								format!("WA2: failed to create SpecSource for {region}: {err}"),
+							)
+							.await;
+						return;
+					}
+				};
+
+				// Decide cache directory: e.g. ~/.cache/wa2/cfn-spec
+				let cache_dir = dirs::cache_dir()
+					.unwrap_or_else(std::env::temp_dir)
+					.join("wa2")
+					.join("cfn-spec");
+
+				let manager = SpecCacheManager::new(source, &cache_dir);
+
+				match manager.load_spec_store().await {
+					Ok(spec_store) => {
+						{
+							let mut guard = engine.lock().unwrap();
+							guard.set_spec_store(spec_store);
+						}
+
+						client
+							.log_message(
+								MessageType::INFO,
+								format!(
+									"WA2: CloudFormation spec loaded and cached in {:?}",
+									cache_dir
+								),
+							)
+							.await;
+					}
+					Err(err) => {
+						client
+							.log_message(
+								MessageType::ERROR,
+								format!(
+									"WA2: failed to load CloudFormation spec (no validation from spec): {err}"
+								),
+							)
+							.await;
+					}
+				}
+			});
+		}
 
 		// listen for work via notify
 		tokio::spawn(async move {
