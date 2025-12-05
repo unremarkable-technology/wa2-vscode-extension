@@ -1,0 +1,258 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use tokio::io::{stdin, stdout};
+use tokio::sync::Notify;
+use tokio::time::sleep;
+use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::*;
+use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+use crate::core_engine::CoreEngine;
+
+/// backend: LSP-facing adapter that holds the engine and schedules work
+pub struct Backend {
+	client: Client,
+	engine: Arc<Mutex<CoreEngine>>,
+	notify: Arc<Notify>,
+	// queue of events (generation, uri); multiple entries for the same uri
+	// are coalesced by the analyser loop.
+	event_queue: Arc<Mutex<VecDeque<Url>>>,
+}
+
+impl Backend {
+	/// bump generation, enqueue an event for this uri, and notify the analyser
+	fn enqueue_event(&self, uri: &Url) {
+		// enqueue this event for the analyser
+		{
+			let mut queue = self.event_queue.lock().unwrap();
+			queue.push_back(uri.clone());
+		}
+
+		// tell background analyser there is work todo
+		self.notify.notify_one();
+	}
+}
+
+impl Backend {
+	pub fn new(client: Client) -> Self {
+		// core engine, task notification and atomic generation counter
+		let engine = Arc::new(Mutex::new(CoreEngine::new()));
+		let notify = Arc::new(Notify::new());
+		let event_queue: Arc<Mutex<VecDeque<Url>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+		Backend {
+			client,
+			engine: engine.clone(),
+			notify: notify.clone(),
+			event_queue: event_queue.clone(),
+		}
+	}
+}
+
+#[tower_lsp::async_trait]
+impl LanguageServer for Backend {
+	/// being asked to initialize, what capabilities do we have
+	async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
+		Ok(InitializeResult {
+			capabilities: ServerCapabilities {
+				text_document_sync: Some(TextDocumentSyncCapability::Kind(
+					TextDocumentSyncKind::FULL, // TECHDEBT: not efficient, ASSUME full text sync
+				)),
+				..ServerCapabilities::default()
+			},
+			server_info: Some(ServerInfo {
+				name: "WA2".to_string(),
+				version: None,
+			}),
+		})
+	}
+
+	/// initialized done, spawns the analyser
+	async fn initialized(&self, _params: InitializedParams) {
+		self.client
+			.log_message(MessageType::INFO, "WA2 LSP server initialized")
+			.await;
+
+		// clone the arcs protecting resources
+		let client = self.client.clone();
+		let engine = self.engine.clone();
+		let notify = self.notify.clone();
+		let event_queue = self.event_queue.clone();
+
+		// listen for work via notify
+		tokio::spawn(async move {
+			analyser_loop(client, engine, notify, event_queue).await;
+		});
+	}
+
+	/// graceful shutdown request
+	async fn shutdown(&self) -> Result<()> {
+		Ok(())
+	}
+
+	/// new document opened
+	/// capture the event, but do no work on main thread
+	async fn did_open(&self, params: DidOpenTextDocumentParams) {
+		// capture that a new document has been opened
+		let uri = params.text_document.uri;
+		let text = params.text_document.text;
+
+		// forward to core engine (under lock)
+		{
+			let mut engine = self.engine.lock().unwrap();
+			engine.on_open(uri.clone(), text);
+		}
+
+		// enqueue analysis event
+		self.enqueue_event(&uri);
+
+		let message = format!("doc_open: {}", uri);
+		self.client.log_message(MessageType::INFO, message).await;
+	}
+
+	/// document changed
+	/// capture the event, but do no work on main thread
+	async fn did_change(&self, params: DidChangeTextDocumentParams) {
+		let uri = params.text_document.uri;
+		let changes = params.content_changes;
+
+		// take the last change's text as the full document.
+		let new_text = changes.last().map(|c| c.text.clone()).unwrap_or_default();
+
+		// forward to core engine (under lock)
+		{
+			let mut engine = self.engine.lock().unwrap();
+			engine.on_change(uri.clone(), new_text);
+		}
+
+		// enqueue analysis event
+		self.enqueue_event(&uri);
+
+		let message = format!("doc_change: {}", uri);
+		self.client.log_message(MessageType::INFO, message).await;
+	}
+
+	/// document saved, re-run analysis on save
+	/// capture the event, but do no work on main thread
+	async fn did_save(&self, params: DidSaveTextDocumentParams) {
+		let uri = params.text_document.uri;
+
+		// forward to core engine (under lock)
+		{
+			let mut engine = self.engine.lock().unwrap();
+			engine.on_save(&uri);
+		}
+
+		// enqueue analysis event
+		self.enqueue_event(&uri);
+
+		let message = format!("doc_save: {}", uri);
+		self.client.log_message(MessageType::INFO, message).await;
+	}
+
+	async fn did_close(&self, _params: DidCloseTextDocumentParams) {
+		// no-op for now
+	}
+}
+
+/// listens for work to do via notify, processing any
+/// changes that require us to analyse again
+async fn analyser_loop(
+	client: Client,
+	engine: Arc<Mutex<CoreEngine>>,
+	notify: Arc<Notify>,
+	event_queue: Arc<Mutex<VecDeque<Url>>>,
+) {
+	const TIME_BUDGET: Duration = Duration::from_millis(50);
+	// we pick 2x the average inter-key interval (2 x 120 = 240)
+	// assumes programmers are fast typist, and when pausing for more
+	// than two IKIs they have probably stoppped, started thinking, etc
+	// https://userinterfaces.aalto.fi/136Mkeystrokes/resources/chi-18-analysis.pdf#:~:text=For%20fast%20typists,%20the%20average%20IKI%20is
+	const IDLE_DELAY: Duration = Duration::from_millis(240);
+
+	loop {
+		// Wait until something changes
+		notify.notified().await;
+
+		// Debounce: wait for an idle gap so that multiple quick edits
+		// can be coalesced into a single analysis pass.
+		sleep(IDLE_DELAY).await;
+
+		let start = Instant::now();
+
+		loop {
+			/* TECHDEBT: we exceed our budget, rather than avoiding that.
+			 * we should know how long a task takes, and exit if we don't
+			 * have sufficient time to execute it this time.
+			 * this also implies no task is allowed which requires > TIME_BUDGET
+			 */
+			// we have run out of time, need to wait until next cycle
+			if start.elapsed() > TIME_BUDGET {
+				// If there's still work left in the queue, schedule another
+				// pass before we go back to waiting on notify. This ensures
+				// leftover events are eventually processed even if no new
+				// edits arrive.
+				let has_remaining_work = {
+					let queue = event_queue.lock().unwrap();
+					!queue.is_empty()
+				};
+				if has_remaining_work {
+					notify.notify_one();
+				}
+
+				let used_ms = start.elapsed().as_millis();
+				let message = format!(
+					"analyser_loop: TIME_BUDGET exhausted {}ms vs {}ms",
+					used_ms,
+					TIME_BUDGET.as_millis()
+				);
+				client.log_message(MessageType::INFO, message).await;
+				break;
+			}
+
+			// Pop one event from the front of the queue. If the queue is
+			// empty, we're done for this pass.
+			let maybe_event = {
+				let mut queue = event_queue.lock().unwrap();
+				queue.pop_front()
+			};
+
+			let uri = match maybe_event {
+				Some(ev) => ev,
+				None => break, // no more work this pass
+			};
+
+			// Coalesce: remove any remaining events for this uri from the
+			// queue. We consider them "covered" by this analysis run.
+			{
+				let mut queue = event_queue.lock().unwrap();
+				queue.retain(|u| u != &uri);
+			}
+
+			// Analyse this uri using the latest text snapshot. We treat
+			// "no text" as a processed event (doc was closed / removed).
+			let diagnostics = {
+				let engine_guard = engine.lock().unwrap();
+				engine_guard.analyse_document_fast(&uri)
+			};
+
+			match diagnostics {
+				Some(diagnostics) => {
+					let message = format!("doc_analyse: {}", uri);
+					client.log_message(MessageType::INFO, message).await;
+
+					client
+						.publish_diagnostics(uri.clone(), diagnostics, None)
+						.await;
+				}
+				None => {
+					let message = format!("doc_analyse: {} (skipped, no text in engine)", uri);
+					client.log_message(MessageType::INFO, message).await;
+					continue;
+				}
+			}
+		}
+	}
+}
