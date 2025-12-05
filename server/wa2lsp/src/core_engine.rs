@@ -117,46 +117,9 @@ impl CoreEngine {
 			Ok(value) => {
 				let mut diags = Vec::new();
 
-				// CloudFormation templates are expected to be mappings with a
-				// top-level `Resources` key in most real-world cases.
-				let has_resources = match value {
-					serde_yaml::Value::Mapping(ref map) => map
-						.keys()
-						.any(|k| matches!(k, serde_yaml::Value::String(s) if s == "Resources")),
-					_ => false,
-				};
-
-				if !has_resources {
-					// We don't know the exact location of "Resources" (it doesn't
-					// exist), so we attach this to the very start of the file.
-					let range = Range {
-						start: Position {
-							line: 0,
-							character: 0,
-						},
-						end: Position {
-							line: 0,
-							character: 1,
-						},
-					};
-
-					diags.push(Diagnostic {
-						range,
-						severity: Some(DiagnosticSeverity::WARNING),
-						code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
-						source: Some("wa2-lsp".into()),
-						message: format!(
-							"YAML template {uri} has no top-level `Resources` section; \
-                             most CloudFormation templates define at least one resource."
-						),
-						..Default::default()
-					});
-				}
-
-				// if we have a loaded SpecStore, do spec-based validation.
-				if let Some(spec) = self.spec_store() {
-					self.check_cfn_yaml_with_spec(uri, text, value, spec, &mut diags);
-				}
+				// CFN-aware checks (both structural and spec-based) live here now.
+				let spec = self.spec_store();
+				self.check_cfn_yaml_structure(uri, text, &value, spec, &mut diags);
 
 				diags
 			}
@@ -262,6 +225,62 @@ impl CoreEngine {
 		}
 	}
 
+	/// CFN-aware structural checks that don't strictly require the spec:
+	///  - presence of top-level Resources
+	/// If a SpecStore is available, this also runs spec-based checks.
+	fn check_cfn_yaml_structure(
+		&self,
+		uri: &Url,
+		text: &str,
+		root: &serde_yaml::Value,
+		spec: Option<&SpecStore>,
+		diags: &mut Vec<Diagnostic>,
+	) {
+		let root_map = match root {
+			serde_yaml::Value::Mapping(m) => m,
+			_ => return,
+		};
+
+		// CloudFormation templates are expected to be mappings with a
+		// top-level `Resources` key in most real-world cases.
+		let has_resources = root_map
+			.keys()
+			.any(|k| matches!(k, serde_yaml::Value::String(s) if s == "Resources"));
+
+		if !has_resources {
+			let range = Range {
+				start: Position {
+					line: 0,
+					character: 0,
+				},
+				end: Position {
+					line: 0,
+					character: 1,
+				},
+			};
+
+			diags.push(Diagnostic {
+				range,
+				severity: Some(DiagnosticSeverity::WARNING),
+				code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+				source: Some("wa2-lsp".into()),
+				message: format!(
+					"YAML template {uri} has no top-level `Resources` section; \
+                 most CloudFormation templates define at least one resource."
+				),
+				..Default::default()
+			});
+
+			// If there's no Resources section, spec-based per-resource checks
+			// don't make sense, so we stop here.
+			return;
+		}
+
+		if let Some(spec) = spec {
+			self.check_cfn_yaml_with_spec(uri, text, root, spec, diags);
+		}
+	}
+
 	/// Perform simple CloudFormation-aware checks using the loaded SpecStore:
 	///  - unknown resource types
 	///  - unknown properties
@@ -274,7 +293,7 @@ impl CoreEngine {
 		&self,
 		uri: &Url,
 		text: &str,
-		root: serde_yaml::Value,
+		root: &serde_yaml::Value,
 		spec: &SpecStore,
 		diags: &mut Vec<Diagnostic>,
 	) {
