@@ -944,3 +944,592 @@ Parameters:
 		);
 	}
 }
+
+#[cfg(test)]
+mod spec_tests {
+	use super::*;
+	use crate::spec::spec_store::SpecStore;
+	use std::sync::Arc;
+	use tower_lsp::lsp_types::DiagnosticSeverity;
+
+	fn uri(path: &str) -> Url {
+		Url::parse(path).expect("valid URI")
+	}
+
+	/// Helper to create a minimal SpecStore for testing using JSON parsing
+	fn create_test_spec() -> Arc<SpecStore> {
+		let json = r#"{
+			"ResourceTypes": {
+				"AWS::S3::Bucket": {
+					"Properties": {
+						"BucketName": {
+							"PrimitiveType": "String",
+							"Required": false
+						},
+						"BucketEncryption": {
+							"Type": "BucketEncryption",
+							"Required": true
+						},
+						"Tags": {
+							"Type": "List",
+							"ItemType": "Tag",
+							"Required": false
+						}
+					}
+				},
+				"AWS::Lambda::Function": {
+					"Properties": {
+						"FunctionName": {
+							"PrimitiveType": "String",
+							"Required": false
+						},
+						"Code": {
+							"Type": "Code",
+							"Required": true
+						},
+						"Runtime": {
+							"PrimitiveType": "String",
+							"Required": true
+						}
+					}
+				}
+			}
+		}"#;
+
+		Arc::new(SpecStore::from_json_bytes(json.as_bytes()).unwrap())
+	}
+
+	#[test]
+	fn spec_unknown_resource_type() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyResource:
+    Type: AWS::FakeService::FakeResource
+    Properties:
+      SomeProp: value
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_UNKNOWN_RESOURCE_TYPE".into()
+			))
+		);
+		assert!(d.message.contains("AWS::FakeService::FakeResource"));
+		assert!(d.message.contains("MyResource"));
+	}
+
+	#[test]
+	fn spec_unknown_property() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+      InvalidProperty: value
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into()))
+		);
+		assert!(d.message.contains("InvalidProperty"));
+		assert!(d.message.contains("MyBucket"));
+		assert!(d.message.contains("AWS::S3::Bucket"));
+	}
+
+	#[test]
+	fn spec_missing_required_property() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-bucket
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_REQUIRED_PROPERTY_MISSING".into()
+			))
+		);
+		assert!(d.message.contains("BucketEncryption"));
+		assert!(d.message.contains("MyBucket"));
+	}
+
+	#[test]
+	fn spec_multiple_issues_one_resource() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      InvalidProperty: value
+      AnotherBadProp: value2
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		// Should have: missing BucketEncryption + 2 unknown properties = 3 diagnostics
+		assert_eq!(diags.len(), 3);
+
+		let unknown_count = diags
+			.iter()
+			.filter(|d| {
+				d.code == Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into()))
+			})
+			.count();
+		assert_eq!(unknown_count, 2);
+
+		let missing_count = diags
+			.iter()
+			.filter(|d| {
+				d.code
+					== Some(NumberOrString::String(
+						"WA2_CFN_REQUIRED_PROPERTY_MISSING".into()
+					))
+			})
+			.count();
+		assert_eq!(missing_count, 1);
+	}
+
+	#[test]
+	fn spec_multiple_resources_different_issues() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      InvalidProperty: value
+  MyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: my-func
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		// MyBucket: missing BucketEncryption + unknown property = 2
+		// MyFunction: missing Code + missing Runtime = 2
+		// Total = 4
+		assert_eq!(diags.len(), 4);
+
+		let bucket_diags: Vec<_> = diags
+			.iter()
+			.filter(|d| d.message.contains("MyBucket"))
+			.collect();
+		assert_eq!(bucket_diags.len(), 2);
+
+		let function_diags: Vec<_> = diags
+			.iter()
+			.filter(|d| d.message.contains("MyFunction"))
+			.collect();
+		assert_eq!(function_diags.len(), 2);
+	}
+
+	#[test]
+	fn spec_valid_resource_all_required_properties() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 0, "valid resource should have no diagnostics");
+	}
+
+	#[test]
+	fn spec_valid_resource_with_optional_properties() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+      BucketName: my-bucket
+      Tags:
+        - Key: Environment
+          Value: Production
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(
+			diags.len(),
+			0,
+			"valid resource with optional properties should have no diagnostics"
+		);
+	}
+
+	#[test]
+	fn spec_resource_key_not_string() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		// YAML allows non-string keys, but CFN doesn't
+		let text = r#"
+Resources:
+  123:
+    Type: AWS::S3::Bucket
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_RESOURCE_KEY_NOT_STRING".into()
+			))
+		);
+	}
+
+	#[test]
+	fn spec_resource_not_mapping() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket: just-a-string
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_RESOURCE_NOT_MAPPING".into()
+			))
+		);
+		assert!(d.message.contains("MyBucket"));
+	}
+
+	#[test]
+	fn spec_type_not_string() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: 123
+    Properties:
+      BucketName: test
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_RESOURCE_TYPE_NOT_STRING".into()
+			))
+		);
+	}
+
+	#[test]
+	fn spec_type_missing() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Properties:
+      BucketName: test
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_RESOURCE_TYPE_MISSING".into()
+			))
+		);
+		assert!(d.message.contains("MyBucket"));
+	}
+
+	#[test]
+	fn spec_properties_not_mapping() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties: just-a-string
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		// When Properties is not a mapping, we emit one error and skip
+		// the required property checks, so just 1 diagnostic
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_PROPERTIES_NOT_MAPPING".into()
+			))
+		);
+	}
+
+	#[test]
+	fn spec_property_key_not_string() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		// YAML technically allows this but it's invalid for CFN
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+      123: value
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_PROPERTY_KEY_NOT_STRING".into()
+			))
+		);
+	}
+
+	#[test]
+	fn spec_resource_with_no_properties_section() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		// When Properties section is absent, the code doesn't check for required properties
+		// This might be a bug, but we test current behaviour
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 0);
+	}
+
+	#[test]
+	fn spec_empty_properties_section() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties: {}
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		// Should detect missing BucketEncryption
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_REQUIRED_PROPERTY_MISSING".into()
+			))
+		);
+		assert!(d.message.contains("BucketEncryption"));
+	}
+
+	#[test]
+	fn spec_multiple_missing_required_properties() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: my-func
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		// Missing Code and Runtime
+		assert_eq!(diags.len(), 2);
+		assert!(diags
+			.iter()
+			.all(|d| d.severity == Some(DiagnosticSeverity::ERROR)));
+		assert!(diags.iter().all(|d| d.code
+			== Some(NumberOrString::String(
+				"WA2_CFN_REQUIRED_PROPERTY_MISSING".into()
+			))));
+
+		let messages: Vec<_> = diags.iter().map(|d| d.message.as_str()).collect();
+		assert!(messages.iter().any(|m| m.contains("Code")));
+		assert!(messages.iter().any(|m| m.contains("Runtime")));
+	}
+
+	#[test]
+	fn spec_all_valid_resources_no_errors() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+      BucketName: test-bucket
+  MyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code: 
+        ZipFile: "code"
+      Runtime: python3.9
+      FunctionName: test-function
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 0, "all valid resources should produce no diagnostics");
+	}
+
+	#[test]
+	fn spec_mixed_valid_and_invalid_resources() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.yaml");
+
+		let text = r#"
+Resources:
+  ValidBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+  InvalidFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: test
+      InvalidProp: value
+"#;
+
+		engine.on_open(uri.clone(), text.to_string());
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		// ValidBucket should be fine
+		// InvalidFunction: missing Code, missing Runtime, unknown InvalidProp = 3 diagnostics
+		assert_eq!(diags.len(), 3);
+
+		let valid_bucket_diags: Vec<_> = diags
+			.iter()
+			.filter(|d| d.message.contains("ValidBucket"))
+			.collect();
+		assert_eq!(valid_bucket_diags.len(), 0);
+
+		let invalid_function_diags: Vec<_> = diags
+			.iter()
+			.filter(|d| d.message.contains("InvalidFunction"))
+			.collect();
+		assert_eq!(invalid_function_diags.len(), 3);
+	}
+}
