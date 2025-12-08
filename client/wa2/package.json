@@ -2,7 +2,7 @@
 	"name": "wa2",
 	"displayName": "WA2",
 	"description": "Well-Architected 2 features, including cross-stack validation for CloudFormation",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"engines": {
 		"vscode": "^1.95.0"
 	},
