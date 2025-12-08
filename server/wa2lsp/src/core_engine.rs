@@ -445,19 +445,23 @@ impl CoreEngine {
 
 /// Convert a MarkedYaml node to an LSP Range using its marker information
 fn marked_yaml_to_range(node: &MarkedYaml) -> Range {
-	// span is a field, not a method - access with .span, not .span()
-	let marker = node.span.start;
-	let line = marker.line().saturating_sub(1);
-	let col = marker.col();
+	let start_marker = node.span.start;
+	let end_marker = node.span.end;
+
+	let start_line = start_marker.line().saturating_sub(1);
+	let start_col = start_marker.col();
+
+	let end_line = end_marker.line().saturating_sub(1);
+	let end_col = end_marker.col();
 
 	Range {
 		start: Position {
-			line: line as u32,
-			character: col as u32,
+			line: start_line as u32,
+			character: start_col as u32,
 		},
 		end: Position {
-			line: line as u32,
-			character: (col + 10) as u32,
+			line: end_line as u32,
+			character: end_col as u32,
 		},
 	}
 }
