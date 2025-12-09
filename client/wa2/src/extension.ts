@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
 			{ language: 'cloudformation-json', scheme: 'file' },
 		],
 		synchronize: {
-			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{yml,yaml,json}'),
+			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{yml,yaml,json,template,cfn}'),
 		},
 	};
 

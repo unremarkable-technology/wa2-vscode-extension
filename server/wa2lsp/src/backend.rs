@@ -160,11 +160,12 @@ impl LanguageServer for Backend {
 		// capture that a new document has been opened
 		let uri = params.text_document.uri;
 		let text = params.text_document.text;
+		let language_id = params.text_document.language_id;
 
 		// forward to core engine (under lock)
 		{
 			let mut engine = self.engine.lock().unwrap();
-			engine.on_open(uri.clone(), text);
+			engine.on_open(uri.clone(), text, language_id);
 		}
 
 		// enqueue analysis event

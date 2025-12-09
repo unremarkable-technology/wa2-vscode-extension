@@ -99,7 +99,7 @@ impl CfnTemplate {
 					severity: Some(DiagnosticSeverity::ERROR),
 					code: Some(NumberOrString::String("WA2_CFN_INVALID_ROOT".into())),
 					source: Some("wa2-lsp".into()),
-					message: format!("Template {uri} root must be a mapping"),
+					message: "Template root must be a mapping".to_string(),
 					..Default::default()
 				}]);
 			}
@@ -129,7 +129,7 @@ impl CfnTemplate {
 					severity: Some(DiagnosticSeverity::ERROR),
 					code: Some(NumberOrString::String("WA2_CFN_INVALID_RESOURCES".into())),
 					source: Some("wa2-lsp".into()),
-					message: format!("Template {uri} Resources section must be a mapping"),
+					message: "Template Resources section must be a mapping".to_string(),
 					..Default::default()
 				}]);
 			}
@@ -148,10 +148,9 @@ impl CfnTemplate {
 							"WA2_CFN_RESOURCE_KEY_NOT_STRING".into(),
 						)),
 						source: Some("wa2-lsp".into()),
-						message: format!(
-							"Template {uri}: resource key is not a string; \
+						message: "Template: resource key is not a string; \
                              CloudFormation logical IDs must be strings."
-						),
+							.to_string(),
 						..Default::default()
 					});
 					continue;
@@ -186,7 +185,7 @@ impl CfnResource {
 		logical_id: String,
 		node: &MarkedYaml,
 		logical_id_range: Range,
-		uri: &Url,
+		_uri: &Url,
 	) -> Result<Self, Vec<Diagnostic>> {
 		let resource_map = match node.data.as_mapping() {
 			Some(m) => m,
@@ -199,7 +198,7 @@ impl CfnResource {
 					)),
 					source: Some("wa2-lsp".into()),
 					message: format!(
-						"Template {uri}: resource `{logical_id}` is not a mapping; \
+						"Template: resource `{logical_id}` is not a mapping; \
                          CloudFormation resources must be mappings with `Type` and `Properties`."
 					),
 					..Default::default()
@@ -225,7 +224,7 @@ impl CfnResource {
 					)),
 					source: Some("wa2-lsp".into()),
 					message: format!(
-						"Template {uri}: resource `{logical_id}` is missing required `Type`."
+						"Template: resource `{logical_id}` is missing required `Type`."
 					),
 					..Default::default()
 				}]
@@ -385,7 +384,7 @@ impl CfnResource {
 		&self,
 		logical_id: &str,
 		spec: &SpecStore,
-		uri: &Url,
+		_uri: &Url,
 	) -> Vec<Diagnostic> {
 		let mut diags = Vec::new();
 
@@ -402,7 +401,7 @@ impl CfnResource {
 					)),
 					source: Some("wa2-lsp".into()),
 					message: format!(
-						"YAML template {uri}: resource `{logical_id}` uses unknown resource type `{}`.",
+						"Template: resource `{logical_id}` uses unknown resource type `{}`.",
 						self.resource_type
 					),
 					..Default::default()
@@ -421,7 +420,7 @@ impl CfnResource {
 					code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into())),
 					source: Some("wa2-lsp".into()),
 					message: format!(
-						"YAML template {uri}: resource `{logical_id}` of type `{}` \
+						"Template: resource `{logical_id}` of type `{}` \
                          has unknown property `{prop_name}`.",
 						self.resource_type
 					),
@@ -441,7 +440,7 @@ impl CfnResource {
 					)),
 					source: Some("wa2-lsp".into()),
 					message: format!(
-						"YAML template {uri}: resource `{logical_id}` of type `{}` \
+						"Template: resource `{logical_id}` of type `{}` \
                          is missing required property `{}`.",
 						self.resource_type, pname.0
 					),
@@ -451,6 +450,321 @@ impl CfnResource {
 		}
 
 		diags
+	}
+}
+
+use jsonc_parser::ast::Value;
+use jsonc_parser::common::Ranged;
+use jsonc_parser::{ParseOptions, errors::ParseError, parse_to_ast};
+
+impl CfnTemplate {
+	/// Parse a CloudFormation template from JSON text
+	pub fn from_json(text: &str, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
+		let parse_options = ParseOptions {
+			allow_comments: true,
+			allow_trailing_commas: true,
+			allow_loose_object_property_names: false,
+			allow_hexadecimal_numbers: false,
+			allow_single_quoted_strings: false,
+			allow_unary_plus_numbers: false,
+		};
+
+		let parse_result = parse_to_ast(text, &Default::default(), &parse_options)
+			.map_err(|err| vec![json_error_to_diagnostic(err, uri)])?;
+
+		// Get the value from ParseResult
+		let root = parse_result.value.ok_or_else(|| {
+			vec![Diagnostic {
+				range: Range {
+					start: Position {
+						line: 0,
+						character: 0,
+					},
+					end: Position {
+						line: 0,
+						character: 1,
+					},
+				},
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_JSON_EMPTY".into())),
+				source: Some("wa2-lsp".into()),
+				message: "Template is empty".to_string(),
+				..Default::default()
+			}]
+		})?;
+
+		Self::from_json_ast(&root, text, uri)
+	}
+
+	fn from_json_ast(root: &Value, text: &str, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
+		let mut resources = HashMap::new();
+
+		let root_obj = match root.as_object() {
+			Some(obj) => obj,
+			None => {
+				return Err(vec![Diagnostic {
+					range: ranged_to_range(root, text),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_INVALID_ROOT".into())),
+					source: Some("wa2-lsp".into()),
+					message: "Template root must be an object".to_string(),
+					..Default::default()
+				}]);
+			}
+		};
+
+		// Find Resources section
+		let resources_value = root_obj.get("Resources").map(|prop| prop.value.clone());
+
+		let resources_value = match resources_value {
+			Some(v) => v,
+			None => {
+				// No Resources section - return empty template
+				return Ok(CfnTemplate {
+					resources: HashMap::new(),
+				});
+			}
+		};
+
+		let resources_obj = match resources_value.as_object() {
+			Some(obj) => obj,
+			None => {
+				return Err(vec![Diagnostic {
+					range: ranged_to_range(&resources_value, text),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_INVALID_RESOURCES".into())),
+					source: Some("wa2-lsp".into()),
+					message: "Template Resources section must be an object".to_string(),
+					..Default::default()
+				}]);
+			}
+		};
+
+		// Convert each resource - iterate over properties
+		let mut errors = Vec::new();
+		for prop in resources_obj.properties.iter() {
+			let logical_id = prop.name.clone().into_string();
+			let logical_id_range = ranged_to_range(&prop.name, text);
+			let resource_value = prop.value.clone();
+
+			match CfnResource::from_json_ast(
+				logical_id.clone(),
+				&resource_value,
+				logical_id_range,
+				text,
+				uri,
+			) {
+				Ok(resource) => {
+					resources.insert(logical_id, resource);
+				}
+				Err(mut diags) => {
+					errors.append(&mut diags);
+				}
+			}
+		}
+
+		if !errors.is_empty() {
+			return Err(errors);
+		}
+
+		Ok(CfnTemplate { resources })
+	}
+}
+
+/// Convert anything with a range to an LSP Range
+fn ranged_to_range<T: Ranged>(node: &T, text: &str) -> Range {
+	let json_range = node.range();
+
+	Range {
+		start: byte_offset_to_position(text, json_range.start),
+		end: byte_offset_to_position(text, json_range.end),
+	}
+}
+
+impl CfnResource {
+	fn from_json_ast(
+		logical_id: String,
+		node: &Value,
+		logical_id_range: Range,
+		text: &str,
+		_uri: &Url,
+	) -> Result<Self, Vec<Diagnostic>> {
+		let resource_obj = match node.as_object() {
+			Some(obj) => obj,
+			None => {
+				return Err(vec![Diagnostic {
+					range: json_ast_to_range(node, text),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_RESOURCE_NOT_MAPPING".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Template: resource `{logical_id}` is not an object; \
+                         CloudFormation resources must be objects with `Type` and `Properties`."
+					),
+					..Default::default()
+				}]);
+			}
+		};
+
+		// Extract Type
+		let type_prop = resource_obj.get("Type").map(|p| p.value.clone());
+		let (type_str, type_range) = match type_prop {
+			Some(v) => match v.as_string_lit() {
+				Some(s) => (s.value.to_string(), ranged_to_range(&v, text)),
+				None => {
+					return Err(vec![Diagnostic {
+						range: logical_id_range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_RESOURCE_TYPE_MISSING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"Template: resource `{logical_id}` is missing required `Type`."
+						),
+						..Default::default()
+					}]);
+				}
+			},
+			None => {
+				return Err(vec![Diagnostic {
+					range: logical_id_range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_RESOURCE_TYPE_MISSING".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Template: resource `{logical_id}` is missing required `Type`."
+					),
+					..Default::default()
+				}]);
+			}
+		};
+
+		// Extract Properties (optional)
+		let properties = resource_obj
+			.get("Properties")
+			.map(|p| p.value.clone())
+			.as_ref()
+			.map(|v| CfnValue::from_json_ast(v, text))
+			.transpose()?
+			.and_then(|v| match v {
+				CfnValue::Object(map, _) => Some(map),
+				_ => None,
+			})
+			.unwrap_or_default();
+
+		Ok(CfnResource {
+			logical_id,
+			resource_type: type_str,
+			properties,
+			logical_id_range,
+			type_range,
+		})
+	}
+}
+
+impl CfnValue {
+	fn from_json_ast(node: &Value, text: &str) -> Result<Self, Vec<Diagnostic>> {
+		let range = json_ast_to_range(node, text);
+
+		// Use as_string_lit(), as_number_lit(), as_boolean_lit()
+		if let Some(s) = node.as_string_lit() {
+			return Ok(CfnValue::String(s.value.to_string(), range));
+		}
+
+		if let Some(n) = node.as_number_lit() {
+			return Ok(CfnValue::Number(
+				n.value.parse::<f64>().unwrap_or(0.0),
+				range,
+			));
+		}
+
+		if let Some(b) = node.as_boolean_lit() {
+			return Ok(CfnValue::Bool(b.value, range));
+		}
+
+		// Check for null - try to match against known null patterns
+		// If none of the above matched and it's not array/object, assume null
+		if node.as_array().is_none() && node.as_object().is_none() {
+			return Ok(CfnValue::Null(range));
+		}
+
+		if let Some(arr) = node.as_array() {
+			let items: Result<Vec<_>, _> = arr
+				.elements
+				.iter()
+				.map(|item| CfnValue::from_json_ast(item, text))
+				.collect();
+			return Ok(CfnValue::Array(items?, range));
+		}
+
+		if let Some(obj) = node.as_object() {
+			let mut map = HashMap::new();
+			for prop in obj.properties.iter() {
+				let key = prop.name.clone().into_string();
+				let value = CfnValue::from_json_ast(&prop.value, text)?;
+				map.insert(key, value);
+			}
+			return Ok(CfnValue::Object(map, range));
+		}
+
+		// Fallback - treat as null
+		Ok(CfnValue::Null(range))
+	}
+}
+
+/// Convert byte offset to line/column position
+fn byte_offset_to_position(text: &str, offset: usize) -> Position {
+	let mut line = 0u32;
+	let mut character = 0u32;
+
+	for (byte_idx, ch) in text.char_indices() {
+		if byte_idx >= offset {
+			break;
+		}
+		if ch == '\n' {
+			line += 1;
+			character = 0;
+		} else {
+			character += 1;
+		}
+	}
+
+	Position { line, character }
+}
+
+/// Convert a jsonc-parser AST Value to an LSP Range
+fn json_ast_to_range(node: &Value, text: &str) -> Range {
+	ranged_to_range(node, text)
+}
+
+/// Convert a jsonc-parser error to an LSP diagnostic
+fn json_error_to_diagnostic(err: ParseError, uri: &Url) -> Diagnostic {
+	// ParseError doesn't have text, so use simple range
+	let json_range = err.range();
+
+	let range = Range {
+		start: Position {
+			line: 0,
+			character: json_range.start as u32,
+		},
+		end: Position {
+			line: 0,
+			character: json_range.end as u32,
+		},
+	};
+
+	Diagnostic {
+		range,
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("WA2_JSON_PARSE".into())),
+		source: Some("wa2-lsp".into()),
+		message: format!("JSON parse error in {uri}: {}", err),
+		..Default::default()
 	}
 }
 

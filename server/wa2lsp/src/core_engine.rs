@@ -2,14 +2,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
-use crate::spec::{
-	cfn_ir::CfnTemplate,
-	spec_store::SpecStore,
-};
+use crate::spec::{cfn_ir::CfnTemplate, spec_store::SpecStore};
 
 /// per-document state held by the core engine
 struct DocumentState {
 	text: String,
+	language_id: Option<String>,
 }
 
 /// core engine: owns all document state and analysis logic
@@ -40,13 +38,20 @@ impl CoreEngine {
 		self.spec.as_deref()
 	}
 
-	pub fn on_open(&mut self, uri: Url, text: String) {
-		self.docs.insert(uri, DocumentState { text });
+	pub fn on_open(&mut self, uri: Url, text: String, language_id: String) {
+		self.docs.insert(
+			uri,
+			DocumentState {
+				text,
+				language_id: Some(language_id),
+			},
+		);
 	}
 
 	pub fn on_change(&mut self, uri: Url, new_text: String) {
 		let entry = self.docs.entry(uri).or_insert(DocumentState {
 			text: String::new(),
+			language_id: None,
 		});
 
 		entry.text = new_text;
@@ -58,19 +63,22 @@ impl CoreEngine {
 		let doc = self.docs.get(uri)?;
 		let text = &doc.text;
 
-		let path = uri.path();
-		let diags = if path.ends_with(".json") {
-			self.analyse_json(uri, text)
-		// don't really need this as else covers it
-		// } else if path.ends_with(".yml") || path.ends_with(".yaml") {
-		// 	self.analyse_yaml(uri, text)
-		} else {
-			self.analyse_yaml(uri, text)
+		let diags = match doc.language_id.as_deref() {
+			Some("cloudformation-json") => self.analyse_json(uri, text),
+			Some("cloudformation-yaml") => self.analyse_yaml(uri, text),
+			_ => {
+				// Fallback to extension
+				let path = uri.path();
+				if path.ends_with(".json") {
+					self.analyse_json(uri, text)
+				} else {
+					self.analyse_yaml(uri, text)
+				}
+			}
 		};
 
 		Some(diags)
 	}
-
 	/// Analyse a document as YAML using saphyr with IR conversion
 	fn analyse_yaml(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
 		// Parse to IR
@@ -78,6 +86,11 @@ impl CoreEngine {
 			Ok(t) => t,
 			Err(diags) => return diags,
 		};
+
+		// Quick check - does this look like CloudFormation?
+		if template.resources.is_empty() && !text.contains("AWSTemplateFormatVersion") {
+			return Vec::new(); // Not CloudFormation, ignore silently
+		}
 
 		let mut diags = Vec::new();
 
@@ -97,10 +110,9 @@ impl CoreEngine {
 				severity: Some(DiagnosticSeverity::WARNING),
 				code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
 				source: Some("wa2-lsp".into()),
-				message: format!(
-					"YAML template {uri} has no top-level `Resources` section; \
+				message: "Template has no top-level `Resources` section; \
                  most CloudFormation templates define at least one resource."
-				),
+					.to_string(),
 				..Default::default()
 			});
 		}
@@ -113,68 +125,50 @@ impl CoreEngine {
 		diags
 	}
 
+	/// Analyse a document as JSON using jsonc-parser with IR conversion
 	fn analyse_json(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
-		match serde_json::from_str::<serde_json::Value>(text) {
-			Ok(value) => {
-				let mut diags = Vec::new();
+		// Parse to IR
+		let template = match CfnTemplate::from_json(text, uri) {
+			Ok(t) => t,
+			Err(diags) => return diags,
+		};
 
-				let has_resources = match value {
-					serde_json::Value::Object(ref map) => map.contains_key("Resources"),
-					_ => false,
-				};
+		// Quick check - does this look like CloudFormation?
+		if template.resources.is_empty() && !text.contains("AWSTemplateFormatVersion") {
+			return Vec::new(); // Not CloudFormation, ignore silently
+		}
 
-				if !has_resources {
-					let range = Range {
-						start: Position {
-							line: 0,
-							character: 0,
-						},
-						end: Position {
-							line: 0,
-							character: 1,
-						},
-					};
+		let mut diags = Vec::new();
 
-					diags.push(Diagnostic {
-						range,
-						severity: Some(DiagnosticSeverity::WARNING),
-						code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
-						source: Some("wa2-lsp".into()),
-						message: format!(
-							"JSON template {uri} has no top-level `Resources` section; \
-                             most CloudFormation templates define at least one resource."
-						),
-						..Default::default()
-					});
-				}
-
-				diags
-			}
-			Err(err) => {
-				let line = err.line().saturating_sub(1);
-				let col = err.column().saturating_sub(1);
-
-				let range = Range {
+		// Check for missing Resources section (warning only)
+		if template.resources.is_empty() {
+			diags.push(Diagnostic {
+				range: Range {
 					start: Position {
-						line: line as u32,
-						character: col as u32,
+						line: 0,
+						character: 0,
 					},
 					end: Position {
-						line: line as u32,
-						character: (col + 1) as u32,
+						line: 0,
+						character: 1,
 					},
-				};
-
-				vec![Diagnostic {
-					range,
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String("WA2_JSON_PARSE".into())),
-					source: Some("wa2-lsp".into()),
-					message: format!("JSON parse error in {uri}: {err}"),
-					..Default::default()
-				}]
-			}
+				},
+				severity: Some(DiagnosticSeverity::WARNING),
+				code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+				source: Some("wa2-lsp".into()),
+				message: "Template has no top-level `Resources` section; \
+                 most CloudFormation templates define at least one resource."
+					.to_string(),
+				..Default::default()
+			});
 		}
+
+		// Validate against spec if available
+		if let Some(spec) = self.spec_store() {
+			diags.extend(template.validate_against_spec(spec, uri));
+		}
+
+		diags
 	}
 }
 
@@ -246,7 +240,11 @@ Resources:
       SomeProp: value
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -277,7 +275,11 @@ Resources:
       InvalidProperty: value
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -306,7 +308,11 @@ Resources:
       BucketName: my-bucket
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -337,7 +343,11 @@ Resources:
       AnotherBadProp: value2
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// Should have: missing BucketEncryption + 2 unknown properties = 3 diagnostics
@@ -379,7 +389,11 @@ Resources:
       FunctionName: my-func
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// MyBucket: missing BucketEncryption + unknown property = 2
@@ -414,7 +428,11 @@ Resources:
       BucketEncryption: enabled
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 0, "valid resource should have no diagnostics");
@@ -438,7 +456,11 @@ Resources:
           Value: Production
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(
@@ -461,7 +483,11 @@ Resources:
     Type: AWS::S3::Bucket
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -486,7 +512,11 @@ Resources:
   MyBucket: just-a-string
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -515,7 +545,11 @@ Resources:
       BucketName: test
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// IR conversion skips non-string Type, so we see missing Type
@@ -543,7 +577,11 @@ Resources:
       BucketName: test
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -571,7 +609,11 @@ Resources:
     Properties: just-a-string
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// IR conversion skips non-mapping Properties, so we just see missing required property
@@ -602,7 +644,11 @@ Resources:
       123: value
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// IR conversion skips non-string keys, so no diagnostic
@@ -624,7 +670,11 @@ Resources:
     Type: AWS::S3::Bucket
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// Now correctly detects missing required property
@@ -648,7 +698,11 @@ Resources:
       FunctionName: my-func
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// Missing Code and Runtime
@@ -690,7 +744,11 @@ Resources:
       FunctionName: test-function
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(
@@ -719,7 +777,11 @@ Resources:
       InvalidProp: value
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		// ValidBucket should be fine
@@ -752,7 +814,11 @@ Resources:
       BucketName: test
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -778,7 +844,11 @@ Resources:
     Type: AWS::FakeType
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -803,7 +873,11 @@ Resources:
     Type: AWS::FakeType2
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 2);
@@ -826,7 +900,11 @@ Resources:
         Type: AWS::FakeType
 "#;
 
-		engine.on_open(uri.clone(), text.to_string());
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-yaml".to_string(),
+		);
 		let diags = engine.analyse_document_fast(&uri).unwrap();
 
 		assert_eq!(diags.len(), 1);
@@ -838,6 +916,126 @@ Resources:
 		assert_eq!(
 			d.range.start.character, 14,
 			"should point to Type value with extra indentation"
+		);
+	}
+
+	#[test]
+	fn json_unknown_resource_type() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.json");
+
+		let text = r#"{
+  "Resources": {
+    "MyResource": {
+      "Type": "AWS::FakeService::FakeResource",
+      "Properties": {
+        "SomeProp": "value"
+      }
+    }
+  }
+}"#;
+
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-json".to_string(),
+		);
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		let d = &diags[0];
+		assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+		assert_eq!(
+			d.code,
+			Some(NumberOrString::String(
+				"WA2_CFN_UNKNOWN_RESOURCE_TYPE".into()
+			))
+		);
+		assert!(d.message.contains("AWS::FakeService::FakeResource"));
+	}
+
+	#[test]
+	fn json_missing_required_property() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.json");
+
+		let text = r#"{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": "my-bucket"
+      }
+    }
+  }
+}"#;
+
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-json".to_string(),
+		);
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		assert!(diags[0].message.contains("BucketEncryption"));
+	}
+
+	#[test]
+	fn json_valid_resource() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.json");
+
+		let text = r#"{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": "enabled"
+      }
+    }
+  }
+}"#;
+
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-json".to_string(),
+		);
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 0);
+	}
+
+	#[test]
+	fn json_parse_error() {
+		let mut engine = CoreEngine::new();
+		engine.set_spec_store(create_test_spec());
+		let uri = uri("file:///tmp/test.json");
+
+		let text = r#"{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+    }
+  }
+}"#; // Unclosed brace - definitely invalid
+
+		engine.on_open(
+			uri.clone(),
+			text.to_string(),
+			"cloudformation-json".to_string(),
+		);
+		let diags = engine.analyse_document_fast(&uri).unwrap();
+
+		assert_eq!(diags.len(), 1);
+		assert_eq!(
+			diags[0].code,
+			Some(NumberOrString::String("WA2_JSON_PARSE".into()))
 		);
 	}
 }
