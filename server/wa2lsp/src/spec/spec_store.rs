@@ -347,13 +347,15 @@ impl TypeInfo {
 		}
 
 		if let Some(ref t) = raw.r#type
-			&& t != "List" && t != "Map" {
-				let pt_id = PropertyTypeId(t.clone());
-				return Some(TypeInfo {
-					kind: ShapeKind::Complex(pt_id),
-					collection,
-				});
-			}
+			&& t != "List"
+			&& t != "Map"
+		{
+			let pt_id = PropertyTypeId(t.clone());
+			return Some(TypeInfo {
+				kind: ShapeKind::Complex(pt_id),
+				collection,
+			});
+		}
 
 		None
 	}

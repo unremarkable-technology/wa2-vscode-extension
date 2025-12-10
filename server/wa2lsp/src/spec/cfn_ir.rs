@@ -1,3 +1,4 @@
+use crate::spec::spec_store::{self, AttributeName, PropertyName, ResourceTypeId, SpecStore};
 use std::collections::HashMap;
 use tower_lsp::lsp_types::Range;
 
@@ -268,6 +269,7 @@ impl CfnResource {
 use saphyr::{Scalar, YamlData};
 impl CfnValue {
 	fn from_marked_yaml(node: &MarkedYaml) -> Result<Self, Vec<Diagnostic>> {
+		// Default range for this node; used by scalars / arrays / plain objects.
 		let range = marked_yaml_to_range(node);
 
 		Ok(match &node.data {
@@ -308,13 +310,17 @@ impl CfnValue {
 
 					// key must be a simple string
 					if let YamlData::Value(Scalar::String(name)) = &k.data {
+						// For intrinsics, we want the range of the *value node*
+						// (the Ref / Fn::GetAtt payload), not the outer mapping.
+						let inner_range = marked_yaml_to_range(v);
+
 						match name.as_ref() {
 							"Ref" => {
 								// Ref target must be a string scalar
 								if let YamlData::Value(Scalar::String(target)) = &v.data {
 									return Ok(CfnValue::Ref {
 										target: target.to_string(),
-										range,
+										range: inner_range,
 									});
 								}
 							}
@@ -334,7 +340,7 @@ impl CfnValue {
 											return Ok(CfnValue::GetAtt {
 												target: target.to_string(),
 												attribute: attribute.to_string(),
-												range,
+												range: inner_range,
 											});
 										}
 									}
@@ -343,7 +349,7 @@ impl CfnValue {
 											return Ok(CfnValue::GetAtt {
 												target: target.to_string(),
 												attribute: attribute.to_string(),
-												range,
+												range: inner_range,
 											});
 										}
 									}
@@ -437,8 +443,6 @@ fn yaml_error_to_diagnostic(err: ScanError, uri: &Url) -> Diagnostic {
 	}
 }
 
-use crate::spec::spec_store::{PropertyName, ResourceTypeId, SpecStore};
-
 impl CfnTemplate {
 	/// Validate this template against the CloudFormation spec
 	pub fn validate_against_spec(&self, spec: &SpecStore, uri: &Url) -> Vec<Diagnostic> {
@@ -448,7 +452,113 @@ impl CfnTemplate {
 			diags.extend(resource.validate_against_spec(logical_id, spec, uri));
 		}
 
+		// validate intrinsic functions (Ref / GetAtt) using symbol table + spec
+		diags.extend(self.validate_intrinsics_against_spec(spec));
+
 		diags
+	}
+
+	/// Walk the template looking for intrinsic functions that need spec / symbol info.
+	fn validate_intrinsics_against_spec(&self, spec: &SpecStore) -> Vec<Diagnostic> {
+		use std::collections::HashMap;
+
+		let mut diags = Vec::new();
+
+		// Symbol table: logical ID → resource type descriptor (only for known types).
+		let mut type_by_logical_id: HashMap<&str, &spec_store::ResourceTypeDescriptor> =
+			HashMap::new();
+
+		for (logical_id, resource) in &self.resources {
+			let type_id = ResourceTypeId(resource.resource_type.clone());
+			if let Some(rt) = spec.resource_types.get(&type_id) {
+				type_by_logical_id.insert(logical_id.as_str(), rt);
+			}
+		}
+
+		// Walk every property value and look for intrinsics.
+		for resource in self.resources.values() {
+			for value in resource.properties.values() {
+				Self::walk_value_for_intrinsics(value, &type_by_logical_id, &mut diags);
+			}
+		}
+
+		diags
+	}
+
+	/// Recursive visitor over CfnValue to find Ref / GetAtt.
+	fn walk_value_for_intrinsics(
+		value: &CfnValue,
+		type_by_logical_id: &std::collections::HashMap<&str, &spec_store::ResourceTypeDescriptor>,
+		diags: &mut Vec<Diagnostic>,
+	) {
+		match value {
+			// For now we don't validate Ref targets because they can be Parameters, etc.
+			CfnValue::Ref { .. } => {
+				// Future: once Parameters / pseudo-params are modeled, add checks here.
+			}
+
+			CfnValue::GetAtt {
+				target,
+				attribute,
+				range,
+			} => {
+				// 1. Does the target logical ID exist?
+				let rt = match type_by_logical_id.get(target.as_str()) {
+					Some(rt) => *rt,
+					None => {
+						diags.push(Diagnostic {
+							range: *range,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_UNKNOWN_GETATT_TARGET".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message: format!(
+								"Template: Fn::GetAtt refers to unknown resource `{}`.",
+								target
+							),
+							..Default::default()
+						});
+						return;
+					}
+				};
+
+				// 2. If we know the resource type, does the attribute exist in the spec?
+				let attr_id = AttributeName(attribute.clone());
+				if !rt.attributes.contains_key(&attr_id) {
+					diags.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"Template: Fn::GetAtt `{target}.{attribute}` refers to \
+                             unknown attribute `{attribute}` on resource type `{}`.",
+							rt.type_id.0
+						),
+						..Default::default()
+					});
+				}
+			}
+
+			CfnValue::Array(items, _) => {
+				for item in items {
+					Self::walk_value_for_intrinsics(item, type_by_logical_id, diags);
+				}
+			}
+
+			CfnValue::Object(map, _) => {
+				for v in map.values() {
+					Self::walk_value_for_intrinsics(v, type_by_logical_id, diags);
+				}
+			}
+
+			_ => {
+				// Scalars / null → nothing to do.
+			}
+		}
 	}
 }
 
@@ -794,30 +904,27 @@ impl CfnValue {
 					}
 					"Fn::GetAtt" => {
 						// ["LogicalId", "Attribute"]
-						if let Some(arr) = value.as_array() {
-							if arr.elements.len() == 2 {
-								if let (Some(target), Some(attribute)) = (
-									arr.elements[0].as_string_lit(),
-									arr.elements[1].as_string_lit(),
-								) {
-									return Ok(CfnValue::GetAtt {
-										target: target.value.to_string(),
-										attribute: attribute.value.to_string(),
-										range,
-									});
-								}
-							}
+						if let Some(arr) = value.as_array()
+							&& arr.elements.len() == 2
+							&& let (Some(target), Some(attribute)) = (
+								arr.elements[0].as_string_lit(),
+								arr.elements[1].as_string_lit(),
+							) {
+							return Ok(CfnValue::GetAtt {
+								target: target.value.to_string(),
+								attribute: attribute.value.to_string(),
+								range,
+							});
 						}
-
 						// "LogicalId.Attribute"
-						if let Some(s) = value.as_string_lit() {
-							if let Some((target, attribute)) = s.value.split_once('.') {
-								return Ok(CfnValue::GetAtt {
-									target: target.to_string(),
-									attribute: attribute.to_string(),
-									range,
-								});
-							}
+						if let Some(s) = value.as_string_lit()
+							&& let Some((target, attribute)) = s.value.split_once('.')
+						{
+							return Ok(CfnValue::GetAtt {
+								target: target.to_string(),
+								attribute: attribute.to_string(),
+								range,
+							});
 						}
 					}
 					_ => {}
@@ -1397,5 +1504,70 @@ Resources:
 			}
 			other => panic!("expected GetAtt CfnValue (string form), got {:?}", other),
 		}
+	}
+
+	#[test]
+	fn validation_detects_unknown_getatt_target() {
+		// MyFunc.RoleArn uses Fn::GetAtt [MissingBucket, Arn] – MissingBucket does not exist.
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+  MyFunc:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: test
+      Runtime: python3.9
+      RoleArn:
+        Fn::GetAtt: [MissingBucket, Arn]
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let spec = create_test_spec();
+		let diags = template.validate_against_spec(&spec, &test_uri());
+
+		assert!(
+			diags.iter().any(|d| d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_UNKNOWN_GETATT_TARGET".into()
+				))),
+			"expected WA2_CFN_UNKNOWN_GETATT_TARGET diagnostic, got: {:?}",
+			diags
+		);
+	}
+
+	#[test]
+	fn validation_detects_unknown_getatt_attribute() {
+		// MyFunc.RoleArn uses Fn::GetAtt [MyBucket, DoesNotExist]
+		// MyBucket exists, but the attribute does not (spec attributes map is empty).
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+  MyFunc:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: test
+      Runtime: python3.9
+      RoleArn:
+        Fn::GetAtt: [MyBucket, DoesNotExist]
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let spec = create_test_spec();
+		let diags = template.validate_against_spec(&spec, &test_uri());
+
+		assert!(
+			diags.iter().any(|d| d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE".into()
+				))),
+			"expected WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE diagnostic, got: {:?}",
+			diags
+		);
 	}
 }

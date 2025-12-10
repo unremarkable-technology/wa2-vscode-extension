@@ -1,7 +1,7 @@
 // server/wa2lsp/src/spec_source.rs
 
-use std::time::Duration;
 use std::io::Read;
+use std::time::Duration;
 
 use bytes::Bytes;
 use flate2::read::GzDecoder;
