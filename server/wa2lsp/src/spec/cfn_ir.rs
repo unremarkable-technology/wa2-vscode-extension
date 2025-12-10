@@ -853,6 +853,7 @@ impl CfnResource {
 
 impl CfnValue {
 	fn from_json_ast(node: &Value, text: &str) -> Result<Self, Vec<Diagnostic>> {
+		// Default range for this node
 		let range = json_ast_to_range(node, text);
 
 		// Use as_string_lit(), as_number_lit(), as_boolean_lit()
@@ -893,12 +894,16 @@ impl CfnValue {
 				let key = prop.name.clone().into_string();
 				let value = &prop.value;
 
+				// For intrinsics, we want the range of the *value* node
+				// (the Ref / Fn::GetAtt payload) rather than the wrapper object.
+				let inner_range = json_ast_to_range(value, text);
+
 				match key.as_str() {
 					"Ref" => {
 						if let Some(s) = value.as_string_lit() {
 							return Ok(CfnValue::Ref {
 								target: s.value.to_string(),
-								range,
+								range: inner_range,
 							});
 						}
 					}
@@ -913,7 +918,7 @@ impl CfnValue {
 							return Ok(CfnValue::GetAtt {
 								target: target.value.to_string(),
 								attribute: attribute.value.to_string(),
-								range,
+								range: inner_range,
 							});
 						}
 						// "LogicalId.Attribute"
@@ -923,7 +928,7 @@ impl CfnValue {
 							return Ok(CfnValue::GetAtt {
 								target: target.to_string(),
 								attribute: attribute.to_string(),
-								range,
+								range: inner_range,
 							});
 						}
 					}
