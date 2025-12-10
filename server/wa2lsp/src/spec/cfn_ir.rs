@@ -29,7 +29,18 @@ pub enum CfnValue {
 	Null(Range),
 	Array(Vec<CfnValue>, Range),
 	Object(HashMap<String, CfnValue>, Range),
-	// We'll add Ref, GetAtt etc. later
+	/// !Ref / { "Ref": "LogicalId" }
+	Ref {
+		target: String,
+		range: Range,
+	},
+
+	/// !GetAtt / { "Fn::GetAtt": ["LogicalId", "Attribute"] } / "LogicalId.Attribute"
+	GetAtt {
+		target: String,
+		attribute: String,
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -42,6 +53,8 @@ impl CfnValue {
 			CfnValue::Null(r) => *r,
 			CfnValue::Array(_, r) => *r,
 			CfnValue::Object(_, r) => *r,
+			CfnValue::Ref { range, .. } => *range,
+			CfnValue::GetAtt { range, .. } => *range,
 		}
 	}
 
@@ -282,6 +295,67 @@ impl CfnValue {
 			}
 
 			YamlData::Mapping(map) => {
+				// Intrinsic long-form detection:
+				//
+				//   SomeProp:
+				//     Ref: MyBucket
+				//
+				//   SomeProp:
+				//     Fn::GetAtt: [MyBucket, Arn]
+				//
+				if map.len() == 1 {
+					let (k, v) = map.iter().next().unwrap();
+
+					// key must be a simple string
+					if let YamlData::Value(Scalar::String(name)) = &k.data {
+						match name.as_ref() {
+							"Ref" => {
+								// Ref target must be a string scalar
+								if let YamlData::Value(Scalar::String(target)) = &v.data {
+									return Ok(CfnValue::Ref {
+										target: target.to_string(),
+										range,
+									});
+								}
+							}
+							"Fn::GetAtt" => {
+								// GetAtt can be ["LogicalId", "Attribute"]
+								// or "LogicalId.Attribute"
+								match &v.data {
+									YamlData::Sequence(seq) if seq.len() == 2 => {
+										let res = &seq[0];
+										let attr = &seq[1];
+
+										if let (
+											YamlData::Value(Scalar::String(target)),
+											YamlData::Value(Scalar::String(attribute)),
+										) = (&res.data, &attr.data)
+										{
+											return Ok(CfnValue::GetAtt {
+												target: target.to_string(),
+												attribute: attribute.to_string(),
+												range,
+											});
+										}
+									}
+									YamlData::Value(Scalar::String(s)) => {
+										if let Some((target, attribute)) = s.split_once('.') {
+											return Ok(CfnValue::GetAtt {
+												target: target.to_string(),
+												attribute: attribute.to_string(),
+												range,
+											});
+										}
+									}
+									_ => {}
+								}
+							}
+							_ => {}
+						}
+					}
+				}
+
+				// Fallback: normal object mapping
 				let mut obj = HashMap::new();
 				for (k, v) in map {
 					// Match on key to get string
@@ -703,6 +777,54 @@ impl CfnValue {
 		}
 
 		if let Some(obj) = node.as_object() {
+			// Intrinsic-detection: objects with a single key "Ref" or "Fn::GetAtt"
+			if obj.properties.len() == 1 {
+				let prop = &obj.properties[0];
+				let key = prop.name.clone().into_string();
+				let value = &prop.value;
+
+				match key.as_str() {
+					"Ref" => {
+						if let Some(s) = value.as_string_lit() {
+							return Ok(CfnValue::Ref {
+								target: s.value.to_string(),
+								range,
+							});
+						}
+					}
+					"Fn::GetAtt" => {
+						// ["LogicalId", "Attribute"]
+						if let Some(arr) = value.as_array() {
+							if arr.elements.len() == 2 {
+								if let (Some(target), Some(attribute)) = (
+									arr.elements[0].as_string_lit(),
+									arr.elements[1].as_string_lit(),
+								) {
+									return Ok(CfnValue::GetAtt {
+										target: target.value.to_string(),
+										attribute: attribute.value.to_string(),
+										range,
+									});
+								}
+							}
+						}
+
+						// "LogicalId.Attribute"
+						if let Some(s) = value.as_string_lit() {
+							if let Some((target, attribute)) = s.value.split_once('.') {
+								return Ok(CfnValue::GetAtt {
+									target: target.to_string(),
+									attribute: attribute.to_string(),
+									range,
+								});
+							}
+						}
+					}
+					_ => {}
+				}
+			}
+
+			// Fallback: plain object → CfnValue::Object
 			let mut map = HashMap::new();
 			for prop in obj.properties.iter() {
 				let key = prop.name.clone().into_string();
@@ -1092,5 +1214,188 @@ Resources:
 		let diags = template.validate_against_spec(&spec, &test_uri());
 
 		assert_eq!(diags.len(), 0);
+	}
+
+	#[test]
+	fn yaml_intrinsic_ref_long_form_converts_to_ref_value() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Ref: OtherBucket
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		let bucket = &template.resources["MyBucket"];
+		let bucket_name = bucket
+			.properties
+			.get("BucketName")
+			.expect("BucketName property must exist");
+
+		match bucket_name {
+			CfnValue::Ref { target, .. } => {
+				assert_eq!(target, "OtherBucket");
+			}
+			other => panic!("expected Ref CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn yaml_intrinsic_getatt_array_form_converts_to_getatt_value() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Arn:
+        Fn::GetAtt: [MyBucket, Arn]
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		let bucket = &template.resources["MyBucket"];
+		let arn = bucket
+			.properties
+			.get("Arn")
+			.expect("Arn property must exist");
+
+		match arn {
+			CfnValue::GetAtt {
+				target, attribute, ..
+			} => {
+				assert_eq!(target, "MyBucket");
+				assert_eq!(attribute, "Arn");
+			}
+			other => panic!("expected GetAtt CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn yaml_intrinsic_getatt_string_form_converts_to_getatt_value() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Arn:
+        Fn::GetAtt: MyBucket.Arn
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		let bucket = &template.resources["MyBucket"];
+		let arn = bucket
+			.properties
+			.get("Arn")
+			.expect("Arn property must exist");
+
+		match arn {
+			CfnValue::GetAtt {
+				target, attribute, ..
+			} => {
+				assert_eq!(target, "MyBucket");
+				assert_eq!(attribute, "Arn");
+			}
+			other => panic!("expected GetAtt CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn json_intrinsic_ref_object_converts_to_ref_value() {
+		let text = r#"
+{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": { "Ref": "OtherBucket" }
+      }
+    }
+  }
+}
+"#;
+
+		let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+
+		let bucket = &template.resources["MyBucket"];
+		let bucket_name = bucket
+			.properties
+			.get("BucketName")
+			.expect("BucketName property must exist");
+
+		match bucket_name {
+			CfnValue::Ref { target, .. } => {
+				assert_eq!(target, "OtherBucket");
+			}
+			other => panic!("expected Ref CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn json_intrinsic_getatt_forms_convert_to_getatt_value() {
+		// Array form
+		let text_array = r#"
+{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "Arn": { "Fn::GetAtt": ["MyBucket", "Arn"] }
+      }
+    }
+  }
+}
+"#;
+
+		let template_array = CfnTemplate::from_json(text_array, &test_uri()).unwrap();
+		let bucket_array = &template_array.resources["MyBucket"];
+		let arn_array = bucket_array
+			.properties
+			.get("Arn")
+			.expect("Arn property must exist");
+
+		match arn_array {
+			CfnValue::GetAtt {
+				target, attribute, ..
+			} => {
+				assert_eq!(target, "MyBucket");
+				assert_eq!(attribute, "Arn");
+			}
+			other => panic!("expected GetAtt CfnValue (array form), got {:?}", other),
+		}
+
+		// String form
+		let text_string = r#"
+{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "Arn": { "Fn::GetAtt": "MyBucket.Arn" }
+      }
+    }
+  }
+}
+"#;
+
+		let template_string = CfnTemplate::from_json(text_string, &test_uri()).unwrap();
+		let bucket_string = &template_string.resources["MyBucket"];
+		let arn_string = bucket_string
+			.properties
+			.get("Arn")
+			.expect("Arn property must exist");
+
+		match arn_string {
+			CfnValue::GetAtt {
+				target, attribute, ..
+			} => {
+				assert_eq!(target, "MyBucket");
+				assert_eq!(attribute, "Arn");
+			}
+			other => panic!("expected GetAtt CfnValue (string form), got {:?}", other),
+		}
 	}
 }
