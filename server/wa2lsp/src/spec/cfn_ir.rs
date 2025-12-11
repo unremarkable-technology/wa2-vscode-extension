@@ -1,4 +1,6 @@
-use crate::spec::spec_store::{self, AttributeName, PropertyName, ResourceTypeId, SpecStore};
+use crate::spec::spec_store::{AttributeName, PropertyName, ResourceTypeId, SpecStore, TypeInfo};
+use crate::spec::symbol_table::SymbolTable;
+use crate::spec::type_resolver;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::Range;
 
@@ -625,195 +627,296 @@ fn yaml_error_to_diagnostic(err: ScanError, uri: &Url) -> Diagnostic {
 
 impl CfnTemplate {
 	/// Validate this template against the CloudFormation spec
-	pub fn validate_against_spec(&self, spec: &SpecStore, uri: &Url) -> Vec<Diagnostic> {
-		let mut diags = Vec::new();
+	pub fn validate_against_spec(&self, spec_store: &SpecStore, _uri: &Url) -> Vec<Diagnostic> {
+		let mut diagnostics = Vec::new();
 
-		for (logical_id, resource) in &self.resources {
-			diags.extend(resource.validate_against_spec(logical_id, spec, uri));
-		}
+		// Build symbol table for intrinsic validation
+		let symbols = SymbolTable::from_template(self);
 
-		// validate intrinsic functions (Ref / GetAtt) using symbol table + spec
-		diags.extend(self.validate_intrinsics_against_spec(spec));
-
-		diags
-	}
-
-	/// Walk the template looking for intrinsic functions that need spec / symbol info.
-	fn validate_intrinsics_against_spec(&self, spec: &SpecStore) -> Vec<Diagnostic> {
-		use std::collections::HashMap;
-
-		let mut diags = Vec::new();
-
-		// Symbol table: logical ID → resource type descriptor (only for known types).
-		let mut type_by_logical_id: HashMap<&str, &spec_store::ResourceTypeDescriptor> =
-			HashMap::new();
-
+		// Validate each resource
 		for (logical_id, resource) in &self.resources {
 			let type_id = ResourceTypeId(resource.resource_type.clone());
-			if let Some(rt) = spec.resource_types.get(&type_id) {
-				type_by_logical_id.insert(logical_id.as_str(), rt);
-			}
-		}
 
-		// Walk every property value and look for intrinsics.
-		for resource in self.resources.values() {
-			for value in resource.properties.values() {
-				Self::walk_value_for_intrinsics(value, &type_by_logical_id, &mut diags);
-			}
-		}
-
-		diags
-	}
-
-	/// Recursive visitor over CfnValue to find Ref / GetAtt.
-	fn walk_value_for_intrinsics(
-		value: &CfnValue,
-		type_by_logical_id: &std::collections::HashMap<&str, &spec_store::ResourceTypeDescriptor>,
-		diags: &mut Vec<Diagnostic>,
-	) {
-		match value {
-			// For now we don't validate Ref targets because they can be Parameters, etc.
-			CfnValue::Ref { .. } => {
-				// Future: once Parameters / pseudo-params are modeled, add checks here.
-			}
-
-			CfnValue::GetAtt {
-				target,
-				attribute,
-				range,
-			} => {
-				// 1. Does the target logical ID exist?
-				let rt = match type_by_logical_id.get(target.as_str()) {
-					Some(rt) => *rt,
-					None => {
-						diags.push(Diagnostic {
-							range: *range,
-							severity: Some(DiagnosticSeverity::ERROR),
-							code: Some(NumberOrString::String(
-								"WA2_CFN_UNKNOWN_GETATT_TARGET".into(),
-							)),
-							source: Some("wa2-lsp".into()),
-							message: format!(
-								"Template: Fn::GetAtt refers to unknown resource `{}`.",
-								target
-							),
-							..Default::default()
-						});
-						return;
-					}
-				};
-
-				// 2. If we know the resource type, does the attribute exist in the spec?
-				let attr_id = AttributeName(attribute.clone());
-				if !rt.attributes.contains_key(&attr_id) {
-					diags.push(Diagnostic {
-						range: *range,
-						severity: Some(DiagnosticSeverity::ERROR),
-						code: Some(NumberOrString::String(
-							"WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE".into(),
-						)),
-						source: Some("wa2-lsp".into()),
-						message: format!(
-							"Template: Fn::GetAtt `{target}.{attribute}` refers to \
-                             unknown attribute `{attribute}` on resource type `{}`.",
-							rt.type_id.0
-						),
-						..Default::default()
-					});
-				}
-			}
-
-			CfnValue::Array(items, _) => {
-				for item in items {
-					Self::walk_value_for_intrinsics(item, type_by_logical_id, diags);
-				}
-			}
-
-			CfnValue::Object(map, _) => {
-				for v in map.values() {
-					Self::walk_value_for_intrinsics(v, type_by_logical_id, diags);
-				}
-			}
-
-			_ => {
-				// Scalars / null → nothing to do.
-			}
-		}
-	}
-}
-
-impl CfnResource {
-	/// Validate this resource against the CloudFormation spec
-	fn validate_against_spec(
-		&self,
-		logical_id: &str,
-		spec: &SpecStore,
-		_uri: &Url,
-	) -> Vec<Diagnostic> {
-		let mut diags = Vec::new();
-
-		// Check if resource type exists in spec
-		let type_id = ResourceTypeId(self.resource_type.clone());
-		let rt = match spec.resource_types.get(&type_id) {
-			Some(rt) => rt,
-			None => {
-				diags.push(Diagnostic {
-					range: self.type_range,
+			// Check if resource type exists in spec
+			if !spec_store.resource_types.contains_key(&type_id) {
+				diagnostics.push(Diagnostic {
+					range: resource.type_range,
 					severity: Some(DiagnosticSeverity::ERROR),
 					code: Some(NumberOrString::String(
 						"WA2_CFN_UNKNOWN_RESOURCE_TYPE".into(),
 					)),
 					source: Some("wa2-lsp".into()),
 					message: format!(
-						"Template: resource `{logical_id}` uses unknown resource type `{}`.",
-						self.resource_type
+						"Unknown CloudFormation resource type: {} (in resource `{}`)",
+						resource.resource_type, logical_id
 					),
 					..Default::default()
 				});
-				return diags; // Can't validate properties without type info
+				continue;
 			}
+
+			// Get resource spec for property validation
+			let resource_spec = match spec_store.resource_types.get(&type_id) {
+				Some(spec) => spec,
+				None => continue,
+			};
+
+			// Check for required properties
+			for (prop_name, prop_spec) in &resource_spec.properties {
+				if prop_spec.required && !resource.properties.contains_key(&prop_name.0) {
+					diagnostics.push(Diagnostic {
+						range: resource.logical_id_range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_REQUIRED_PROPERTY_MISSING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"Resource `{}` is missing required property `{}`",
+							logical_id, prop_name.0
+						),
+						..Default::default()
+					});
+				}
+			}
+
+			// Check for unknown properties and validate types
+			for (prop_name, prop_value) in &resource.properties {
+				let prop_id = PropertyName(prop_name.clone());
+
+				match resource_spec.properties.get(&prop_id) {
+					Some(prop_spec) => {
+						// Property exists - validate type
+						Self::validate_property_type(
+							prop_value,
+							&prop_spec.type_info,
+							&symbols,
+							spec_store,
+							logical_id,
+							prop_name,
+							&mut diagnostics,
+						);
+					}
+					None => {
+						// Unknown property
+						diagnostics.push(Diagnostic {
+							range: prop_value.range(),
+							severity: Some(DiagnosticSeverity::WARNING),
+							code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into())),
+							source: Some("wa2-lsp".into()),
+							message: format!(
+								"Unknown property `{}` for resource type `{}` (in resource `{}`)",
+								prop_name, resource.resource_type, logical_id
+							),
+							..Default::default()
+						});
+					}
+				}
+
+				// Validate intrinsic functions (existence checks)
+				Self::validate_intrinsics(prop_value, &symbols, &mut diagnostics, spec_store); // Pass spec_store
+			}
+		}
+
+		diagnostics
+	}
+
+	// Validate that a property value's type matches what the spec expects
+	fn validate_property_type(
+		value: &CfnValue,
+		expected: &TypeInfo,
+		symbols: &SymbolTable,
+		spec: &SpecStore,
+		resource_id: &str,
+		prop_name: &str,
+		diagnostics: &mut Vec<Diagnostic>,
+	) {
+		// Resolve the actual type of the value
+		let actual = match type_resolver::resolve_type(value, symbols, spec) {
+			Some(t) => t,
+			None => return, // Can't resolve type (e.g., null, unknown intrinsic)
 		};
 
-		// Check for unknown properties
-		for (prop_name, prop_value) in &self.properties {
-			let prop_id = PropertyName(prop_name.clone());
-			if !rt.properties.contains_key(&prop_id) {
-				diags.push(Diagnostic {
-					range: prop_value.range(),
-					severity: Some(DiagnosticSeverity::WARNING),
-					code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into())),
-					source: Some("wa2-lsp".into()),
-					message: format!(
-						"Template: resource `{logical_id}` of type `{}` \
-                         has unknown property `{prop_name}`.",
-						self.resource_type
-					),
-					..Default::default()
-				});
-			}
+		// Check if types are compatible
+		if !Self::types_compatible(&actual, expected) {
+			diagnostics.push(Diagnostic {
+				range: value.range(),
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_TYPE_MISMATCH".into())),
+				source: Some("wa2-lsp".into()),
+				message: format!(
+					"Type mismatch in resource `{}` property `{}`: expected {}, got {}",
+					resource_id,
+					prop_name,
+					Self::format_type(expected),
+					Self::format_type(&actual)
+				),
+				..Default::default()
+			});
+		}
+	}
+
+	// Check if two types are compatible
+	fn types_compatible(actual: &TypeInfo, expected: &TypeInfo) -> bool {
+		use crate::spec::spec_store::{CollectionKind, PrimitiveType, ShapeKind};
+
+		// Check collection compatibility first
+		match (&actual.collection, &expected.collection) {
+			(CollectionKind::Scalar, CollectionKind::Scalar) => {}
+			(CollectionKind::List, CollectionKind::List) => {}
+			(CollectionKind::Map, CollectionKind::Map) => {}
+			_ => return false, // Collection mismatch
 		}
 
-		// Check for missing required properties
-		for (pname, _pshape) in rt.properties.iter().filter(|(_, s)| s.required) {
-			if !self.properties.contains_key(&pname.0) {
-				diags.push(Diagnostic {
-					range: self.logical_id_range,
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String(
-						"WA2_CFN_REQUIRED_PROPERTY_MISSING".into(),
-					)),
-					source: Some("wa2-lsp".into()),
-					message: format!(
-						"Template: resource `{logical_id}` of type `{}` \
-                         is missing required property `{}`.",
-						self.resource_type, pname.0
-					),
-					..Default::default()
-				});
-			}
-		}
+		// Check shape compatibility
+		match (&actual.kind, &expected.kind) {
+			// Exact match
+			(ShapeKind::Primitive(a), ShapeKind::Primitive(e)) if a == e => true,
 
-		diags
+			// Any accepts anything
+			(_, ShapeKind::Any) => true,
+			(ShapeKind::Any, _) => true,
+
+			// Number type compatibility - be lenient like CloudFormation
+			// Integer/Long/Double can all be used interchangeably
+			(
+				ShapeKind::Primitive(PrimitiveType::Integer),
+				ShapeKind::Primitive(PrimitiveType::Double),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Integer),
+				ShapeKind::Primitive(PrimitiveType::Long),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Long),
+				ShapeKind::Primitive(PrimitiveType::Double),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Long),
+				ShapeKind::Primitive(PrimitiveType::Integer),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Double),
+				ShapeKind::Primitive(PrimitiveType::Integer),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Double),
+				ShapeKind::Primitive(PrimitiveType::Long),
+			) => true,
+
+			// Complex types must match exactly (for now)
+			(ShapeKind::Complex(a), ShapeKind::Complex(e)) => a == e,
+
+			_ => false,
+		}
+	}
+
+	// Format a type for display in error messages
+	fn format_type(type_info: &TypeInfo) -> String {
+		use crate::spec::spec_store::{CollectionKind, PrimitiveType, ShapeKind};
+
+		let base = match &type_info.kind {
+			ShapeKind::Primitive(p) => match p {
+				PrimitiveType::String => "String",
+				PrimitiveType::Integer => "Integer",
+				PrimitiveType::Long => "Long",
+				PrimitiveType::Double => "Double",
+				PrimitiveType::Boolean => "Boolean",
+				PrimitiveType::Timestamp => "Timestamp",
+				PrimitiveType::Json => "Json",
+				PrimitiveType::Other(s) => s.as_str(),
+			},
+			ShapeKind::Complex(id) => &id.0,
+			ShapeKind::Any => "Any",
+		};
+
+		match type_info.collection {
+			CollectionKind::Scalar => base.to_string(),
+			CollectionKind::List => format!("List<{}>", base),
+			CollectionKind::Map => format!("Map<{}>", base),
+		}
+	}
+
+	fn validate_intrinsics(
+		value: &CfnValue,
+		symbols: &SymbolTable,
+		diagnostics: &mut Vec<Diagnostic>,
+		spec: &SpecStore, // NEW parameter
+	) {
+		match value {
+			CfnValue::Ref { target, range } => {
+				if !symbols.has_ref_target(target) {
+					diagnostics.push(Diagnostic {
+                    range: *range,
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())),
+                    source: Some("wa2-lsp".into()),
+                    message: format!(
+                        "!Ref target `{}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+                        target
+                    ),
+                    ..Default::default()
+                });
+				}
+			}
+			CfnValue::GetAtt {
+				target,
+				attribute,
+				range,
+			} => {
+				// Check if the resource exists
+				if !symbols.has_resource(target) {
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_INVALID_GETATT_RESOURCE".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!("!GetAtt target resource `{}` does not exist.", target),
+						..Default::default()
+					});
+					return; // Can't validate attribute if resource doesn't exist
+				}
+
+				// NEW: Validate attribute exists for the resource type
+				if let Some(resource_entry) = symbols.resources.get(target) {
+					let type_id = ResourceTypeId(resource_entry.resource_type.clone());
+					if let Some(resource_spec) = spec.resource_types.get(&type_id) {
+						let attr_name = AttributeName(attribute.clone());
+						if !resource_spec.attributes.contains_key(&attr_name) {
+							diagnostics.push(Diagnostic {
+								range: *range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message: format!(
+									"!GetAtt attribute `{}` does not exist on resource type `{}`.",
+									attribute, resource_entry.resource_type
+								),
+								..Default::default()
+							});
+						}
+					}
+				}
+			}
+			CfnValue::Array(items, _) => {
+				for item in items {
+					Self::validate_intrinsics(item, symbols, diagnostics, spec); // Pass spec
+				}
+			}
+			CfnValue::Object(map, _) => {
+				for val in map.values() {
+					Self::validate_intrinsics(val, symbols, diagnostics, spec); // Pass spec
+				}
+			}
+			CfnValue::String(..)
+			| CfnValue::Number(..)
+			| CfnValue::Bool(..)
+			| CfnValue::Null(..) => {}
+		}
 	}
 }
 
@@ -1598,10 +1701,11 @@ Parameters:
 		ResourceTypeId, ShapeKind, SpecStore, TypeInfo,
 	};
 
+	// In cfn_ir.rs, update create_test_spec()
 	fn create_test_spec() -> SpecStore {
 		let mut resource_types = std::collections::HashMap::new();
 
-		// AWS::S3::Bucket with BucketName (optional) and BucketEncryption (required)
+		// AWS::S3::Bucket with BucketName and BucketEncryption as simple strings (not complex)
 		let mut s3_bucket_props = std::collections::HashMap::new();
 		s3_bucket_props.insert(
 			PropertyName("BucketName".into()),
@@ -1622,12 +1726,24 @@ Parameters:
 			PropertyShape {
 				name: PropertyName("BucketEncryption".into()),
 				type_info: TypeInfo {
-					kind: ShapeKind::Complex(crate::spec::spec_store::PropertyTypeId(
-						"BucketEncryption".into(),
-					)),
+					kind: ShapeKind::Primitive(PrimitiveType::String), // Changed from Complex to String
 					collection: CollectionKind::Scalar,
 				},
 				required: true,
+				documentation_url: None,
+				update_behavior: None,
+				duplicates_allowed: false,
+			},
+		);
+		s3_bucket_props.insert(
+			PropertyName("Tags".into()),
+			PropertyShape {
+				name: PropertyName("Tags".into()),
+				type_info: TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String),
+					collection: CollectionKind::List, // List of strings for simplicity
+				},
+				required: false,
 				documentation_url: None,
 				update_behavior: None,
 				duplicates_allowed: false,
@@ -1639,6 +1755,75 @@ Parameters:
 			ResourceTypeDescriptor {
 				type_id: ResourceTypeId("AWS::S3::Bucket".into()),
 				properties: s3_bucket_props,
+				attributes: std::collections::HashMap::new(),
+				documentation_url: None,
+			},
+		);
+
+		// AWS::Lambda::Function with required properties as strings
+		let mut lambda_props = std::collections::HashMap::new();
+		lambda_props.insert(
+			PropertyName("FunctionName".into()),
+			PropertyShape {
+				name: PropertyName("FunctionName".into()),
+				type_info: TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String),
+					collection: CollectionKind::Scalar,
+				},
+				required: false,
+				documentation_url: None,
+				update_behavior: None,
+				duplicates_allowed: false,
+			},
+		);
+		lambda_props.insert(
+			PropertyName("Code".into()),
+			PropertyShape {
+				name: PropertyName("Code".into()),
+				type_info: TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String), // Simplified for testing
+					collection: CollectionKind::Scalar,
+				},
+				required: true,
+				documentation_url: None,
+				update_behavior: None,
+				duplicates_allowed: false,
+			},
+		);
+		lambda_props.insert(
+			PropertyName("Runtime".into()),
+			PropertyShape {
+				name: PropertyName("Runtime".into()),
+				type_info: TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String),
+					collection: CollectionKind::Scalar,
+				},
+				required: true,
+				documentation_url: None,
+				update_behavior: None,
+				duplicates_allowed: false,
+			},
+		);
+		lambda_props.insert(
+			PropertyName("RoleArn".into()),
+			PropertyShape {
+				name: PropertyName("RoleArn".into()),
+				type_info: TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String),
+					collection: CollectionKind::Scalar,
+				},
+				required: false,
+				documentation_url: None,
+				update_behavior: None,
+				duplicates_allowed: false,
+			},
+		);
+
+		resource_types.insert(
+			ResourceTypeId("AWS::Lambda::Function".into()),
+			ResourceTypeDescriptor {
+				type_id: ResourceTypeId("AWS::Lambda::Function".into()),
+				properties: lambda_props,
 				attributes: std::collections::HashMap::new(),
 				documentation_url: None,
 			},
@@ -1665,7 +1850,11 @@ Resources:
 		let diags = template.validate_against_spec(&spec, &test_uri());
 
 		assert_eq!(diags.len(), 1);
-		assert!(diags[0].message.contains("unknown resource type"));
+		assert!(
+			diags[0]
+				.message
+				.contains("Unknown CloudFormation resource type")
+		); // Changed capitalization
 		assert!(diags[0].message.contains("AWS::FakeService::FakeResource"));
 	}
 
@@ -1685,7 +1874,7 @@ Resources:
 		let diags = template.validate_against_spec(&spec, &test_uri());
 
 		assert_eq!(diags.len(), 1);
-		assert!(diags[0].message.contains("unknown property"));
+		assert!(diags[0].message.contains("Unknown property")); // Changed capitalization
 		assert!(diags[0].message.contains("InvalidProperty"));
 	}
 
@@ -1910,71 +2099,6 @@ Resources:
 	}
 
 	#[test]
-	fn validation_detects_unknown_getatt_target() {
-		// MyFunc.RoleArn uses Fn::GetAtt [MissingBucket, Arn] – MissingBucket does not exist.
-		let text = r#"
-Resources:
-  MyBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketEncryption: enabled
-  MyFunc:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: test
-      Runtime: python3.9
-      RoleArn:
-        Fn::GetAtt: [MissingBucket, Arn]
-"#;
-
-		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
-		let spec = create_test_spec();
-		let diags = template.validate_against_spec(&spec, &test_uri());
-
-		assert!(
-			diags.iter().any(|d| d.code
-				== Some(NumberOrString::String(
-					"WA2_CFN_UNKNOWN_GETATT_TARGET".into()
-				))),
-			"expected WA2_CFN_UNKNOWN_GETATT_TARGET diagnostic, got: {:?}",
-			diags
-		);
-	}
-
-	#[test]
-	fn validation_detects_unknown_getatt_attribute() {
-		// MyFunc.RoleArn uses Fn::GetAtt [MyBucket, DoesNotExist]
-		// MyBucket exists, but the attribute does not (spec attributes map is empty).
-		let text = r#"
-Resources:
-  MyBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketEncryption: enabled
-  MyFunc:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: test
-      Runtime: python3.9
-      RoleArn:
-        Fn::GetAtt: [MyBucket, DoesNotExist]
-"#;
-
-		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
-		let spec = create_test_spec();
-		let diags = template.validate_against_spec(&spec, &test_uri());
-
-		assert!(
-			diags.iter().any(|d| d.code
-				== Some(NumberOrString::String(
-					"WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE".into()
-				))),
-			"expected WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE diagnostic, got: {:?}",
-			diags
-		);
-	}
-
-	#[test]
 	fn yaml_short_form_ref_converts_to_ref_value() {
 		let text = r#"
 Resources:
@@ -2122,6 +2246,353 @@ Resources:
 		assert_eq!(
 			env_param.description,
 			Some("Deployment environment".to_string())
+		);
+	}
+
+	#[test]
+	fn test_invalid_ref_target() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref NonExistentResource
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec(); // Changed from new_empty()
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(diagnostics.iter().any(|d| {
+			d.code == Some(NumberOrString::String("WA2_CFN_INVALID_REF".into()))
+				&& d.message.contains("NonExistentResource")
+		}));
+	}
+
+	#[test]
+	fn test_valid_ref_to_resource() {
+		let text = r#"
+Resources:
+  SourceBucket:
+    Type: AWS::S3::Bucket
+  DestBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SourceBucket
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec(); // Changed
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(
+			!diagnostics
+				.iter()
+				.any(|d| { d.code == Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())) })
+		);
+	}
+
+	#[test]
+	fn test_valid_ref_to_parameter() {
+		let text = r#"
+Parameters:
+  Environment:
+    Type: String
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref Environment
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec(); // Changed
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(
+			!diagnostics
+				.iter()
+				.any(|d| { d.code == Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())) })
+		);
+	}
+
+	#[test]
+	fn test_valid_ref_to_pseudo_parameter() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref AWS::Region
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec(); // Changed
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(
+			!diagnostics
+				.iter()
+				.any(|d| { d.code == Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())) })
+		);
+	}
+
+	#[test]
+	fn test_invalid_getatt_resource() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Arn: !GetAtt NonExistentBucket.Arn
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec(); // Changed
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(diagnostics.iter().any(|d| {
+			d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_INVALID_GETATT_RESOURCE".into(),
+				)) && d.message.contains("NonExistentBucket")
+		}));
+	}
+
+	#[test]
+	fn test_type_mismatch_ref_returns_string() {
+		use crate::spec::spec_store::{
+			CollectionKind, PrimitiveType, PropertyName, PropertyShape, ResourceTypeDescriptor,
+			ResourceTypeId, ShapeKind, SpecStore, TypeInfo,
+		};
+
+		// Create spec with S3::Bucket and Lambda::Function
+		let mut resource_types = std::collections::HashMap::new();
+
+		// Add S3::Bucket (empty properties, just needs to exist)
+		resource_types.insert(
+			ResourceTypeId("AWS::S3::Bucket".into()),
+			ResourceTypeDescriptor {
+				type_id: ResourceTypeId("AWS::S3::Bucket".into()),
+				properties: std::collections::HashMap::new(),
+				attributes: std::collections::HashMap::new(),
+				documentation_url: None,
+			},
+		);
+
+		// Add Lambda::Function with Timeout property that expects Integer
+		let mut lambda_props = std::collections::HashMap::new();
+		lambda_props.insert(
+			PropertyName("Timeout".into()),
+			PropertyShape {
+				name: PropertyName("Timeout".into()),
+				type_info: TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::Integer),
+					collection: CollectionKind::Scalar,
+				},
+				required: false,
+				documentation_url: None,
+				update_behavior: None,
+				duplicates_allowed: false,
+			},
+		);
+
+		resource_types.insert(
+			ResourceTypeId("AWS::Lambda::Function".into()),
+			ResourceTypeDescriptor {
+				type_id: ResourceTypeId("AWS::Lambda::Function".into()),
+				properties: lambda_props,
+				attributes: std::collections::HashMap::new(),
+				documentation_url: None,
+			},
+		);
+
+		let spec = SpecStore {
+			resource_types,
+			property_types: std::collections::HashMap::new(),
+		};
+
+		// Ref to a resource returns String, but Timeout needs Integer
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+  MyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Timeout: !Ref MyBucket
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let diagnostics = template.validate_against_spec(&spec, &uri);
+
+		assert!(
+			diagnostics.iter().any(|d| {
+				d.code == Some(NumberOrString::String("WA2_CFN_TYPE_MISMATCH".into()))
+					&& d.message.contains("expected Integer")
+					&& d.message.contains("got String")
+			}),
+			"Expected type mismatch diagnostic, got: {:?}",
+			diagnostics
+		);
+	}
+
+	#[test]
+	fn test_type_match_string_property() {
+		let text = r#"
+Parameters:
+  BucketName:
+    Type: String
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      BucketEncryption: enabled
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec = create_test_spec();
+		let diagnostics = template.validate_against_spec(&spec, &uri);
+
+		// Should not have type mismatch - String parameter to String property is valid
+		assert!(
+			!diagnostics.iter().any(|d| {
+				d.code == Some(NumberOrString::String("WA2_CFN_TYPE_MISMATCH".into()))
+			}),
+			"Should not have type mismatch, got: {:?}",
+			diagnostics
+		);
+	}
+
+	use crate::spec::spec_store::{
+		AttributeName, AttributeShape
+	};
+	#[test]
+	fn test_invalid_getatt_attribute() {
+		// Create spec with S3::Bucket that has only "Arn" attribute
+		let mut resource_types = std::collections::HashMap::new();
+		let mut s3_attributes = std::collections::HashMap::new();
+
+		s3_attributes.insert(
+			AttributeName("Arn".into()),
+			AttributeShape {
+				name: AttributeName("Arn".into()),
+				type_info: Some(TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String),
+					collection: CollectionKind::Scalar,
+				}),
+				documentation_url: None,
+			},
+		);
+
+		resource_types.insert(
+			ResourceTypeId("AWS::S3::Bucket".into()),
+			ResourceTypeDescriptor {
+				type_id: ResourceTypeId("AWS::S3::Bucket".into()),
+				properties: std::collections::HashMap::new(),
+				attributes: s3_attributes,
+				documentation_url: None,
+			},
+		);
+
+		let spec = SpecStore {
+			resource_types,
+			property_types: std::collections::HashMap::new(),
+		};
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+  AnotherBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !GetAtt MyBucket.InvalidAttribute
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let diagnostics = template.validate_against_spec(&spec, &uri);
+
+		assert!(
+			diagnostics.iter().any(|d| {
+				d.code
+					== Some(NumberOrString::String(
+						"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
+					)) && d.message.contains("InvalidAttribute")
+			}),
+			"Expected invalid attribute diagnostic, got: {:?}",
+			diagnostics
+		);
+	}
+
+	#[test]
+	fn test_valid_getatt_attribute() {
+		// Create spec with S3::Bucket that has "Arn" attribute
+		let mut resource_types = std::collections::HashMap::new();
+		let mut s3_attributes = std::collections::HashMap::new();
+
+		s3_attributes.insert(
+			AttributeName("Arn".into()),
+			AttributeShape {
+				name: AttributeName("Arn".into()),
+				type_info: Some(TypeInfo {
+					kind: ShapeKind::Primitive(PrimitiveType::String),
+					collection: CollectionKind::Scalar,
+				}),
+				documentation_url: None,
+			},
+		);
+
+		resource_types.insert(
+			ResourceTypeId("AWS::S3::Bucket".into()),
+			ResourceTypeDescriptor {
+				type_id: ResourceTypeId("AWS::S3::Bucket".into()),
+				properties: std::collections::HashMap::new(),
+				attributes: s3_attributes,
+				documentation_url: None,
+			},
+		);
+
+		let spec = SpecStore {
+			resource_types,
+			property_types: std::collections::HashMap::new(),
+		};
+
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+  AnotherBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !GetAtt MyBucket.Arn
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let diagnostics = template.validate_against_spec(&spec, &uri);
+
+		// Should not have invalid attribute error
+		assert!(
+			!diagnostics.iter().any(|d| {
+				d.code
+					== Some(NumberOrString::String(
+						"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
+					))
+			}),
+			"Should not have invalid attribute error, got: {:?}",
+			diagnostics
 		);
 	}
 }

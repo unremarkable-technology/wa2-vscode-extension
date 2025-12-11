@@ -186,42 +186,42 @@ mod spec_tests {
 	/// Helper to create a minimal SpecStore for testing using JSON parsing
 	fn create_test_spec() -> Arc<SpecStore> {
 		let json = r#"{
-			"ResourceTypes": {
-				"AWS::S3::Bucket": {
-					"Properties": {
-						"BucketName": {
-							"PrimitiveType": "String",
-							"Required": false
-						},
-						"BucketEncryption": {
-							"Type": "BucketEncryption",
-							"Required": true
-						},
-						"Tags": {
-							"Type": "List",
-							"ItemType": "Tag",
-							"Required": false
-						}
-					}
-				},
-				"AWS::Lambda::Function": {
-					"Properties": {
-						"FunctionName": {
-							"PrimitiveType": "String",
-							"Required": false
-						},
-						"Code": {
-							"Type": "Code",
-							"Required": true
-						},
-						"Runtime": {
-							"PrimitiveType": "String",
-							"Required": true
-						}
-					}
-				}
-			}
-		}"#;
+        "ResourceTypes": {
+            "AWS::S3::Bucket": {
+                "Properties": {
+                    "BucketName": {
+                        "PrimitiveType": "String",
+                        "Required": false
+                    },
+                    "BucketEncryption": {
+                        "PrimitiveType": "String",
+                        "Required": true
+                    },
+                    "Tags": {
+                        "Type": "List",
+                        "PrimitiveItemType": "String",
+                        "Required": false
+                    }
+                }
+            },
+            "AWS::Lambda::Function": {
+                "Properties": {
+                    "FunctionName": {
+                        "PrimitiveType": "String",
+                        "Required": false
+                    },
+                    "Code": {
+                        "PrimitiveType": "String",
+                        "Required": true
+                    },
+                    "Runtime": {
+                        "PrimitiveType": "String",
+                        "Required": true
+                    }
+                }
+            }
+        }
+    }"#;
 
 		Arc::new(SpecStore::from_json_bytes(json.as_bytes()).unwrap())
 	}

@@ -212,7 +212,7 @@ pub enum CollectionKind {
 	Map,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PrimitiveType {
 	String,
 	Long,

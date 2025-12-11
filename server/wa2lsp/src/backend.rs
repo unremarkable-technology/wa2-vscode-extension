@@ -59,7 +59,7 @@ impl LanguageServer for Backend {
 		Ok(InitializeResult {
 			capabilities: ServerCapabilities {
 				text_document_sync: Some(TextDocumentSyncCapability::Kind(
-					TextDocumentSyncKind::FULL, // TECHDEBT: not efficient, ASSUME full text sync
+					TextDocumentSyncKind::FULL,
 				)),
 				..ServerCapabilities::default()
 			},
@@ -89,7 +89,8 @@ impl LanguageServer for Backend {
 
 			tokio::spawn(async move {
 				// Simple region choice for now; you can make this configurable later.
-				let region = "eu-west-2"; // London, matches your TZ / likely usage.
+				let region = "us-east-1"; // US East (N. Virginia)
+				//let region = "eu-west-2"; // London, matches your TZ / likely usage.
 
 				let source = match SpecSource::for_region(region) {
 					Ok(s) => s,
