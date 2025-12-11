@@ -286,7 +286,33 @@ impl CfnValue {
 			},
 
 			// Handle tagged nodes by recursing on the inner value
-			YamlData::Tagged(_tag, inner) => {
+			YamlData::Tagged(tag, inner) => {
+				let range = marked_yaml_to_range(node);
+
+				match tag.as_ref().suffix.as_str() {
+					"Ref" => {
+						if let YamlData::Value(Scalar::String(target)) = &inner.data {
+							return Ok(CfnValue::Ref {
+								target: target.to_string(),
+								range,
+							});
+						}
+					}
+					"GetAtt" => {
+						if let YamlData::Value(Scalar::String(s)) = &inner.data
+							&& let Some((target, attribute)) = s.split_once('.')
+						{
+							return Ok(CfnValue::GetAtt {
+								target: target.to_string(),
+								attribute: attribute.to_string(),
+								range,
+							});
+						}
+					}
+					_ => {}
+				}
+
+				// Fallback for unknown tags
 				return CfnValue::from_marked_yaml(inner);
 			}
 
@@ -1002,6 +1028,76 @@ fn json_error_to_diagnostic(err: ParseError, uri: &Url) -> Diagnostic {
 	}
 }
 
+use std::fmt;
+
+impl fmt::Display for CfnTemplate {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		writeln!(f, "Template:")?;
+		for (logical_id, resource) in &self.resources {
+			writeln!(f, "  {}:", logical_id)?;
+			// Write resource indented - each line from resource already has indentation
+			for line in resource.to_string().lines() {
+				writeln!(f, "{}", line)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl fmt::Display for CfnResource {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		writeln!(f, "    Type: {}", self.resource_type)?;
+		if !self.properties.is_empty() {
+			writeln!(f, "    Properties:")?;
+			// Sort properties by name for deterministic output
+			let mut props: Vec<_> = self.properties.iter().collect();
+			props.sort_by_key(|(name, _)| *name);
+
+			for (name, value) in props {
+				writeln!(f, "      {}: {}", name, value)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl fmt::Display for CfnValue {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			CfnValue::String(s, _) => write!(f, "\"{}\"", s),
+			CfnValue::Number(n, _) => write!(f, "{}", n),
+			CfnValue::Bool(b, _) => write!(f, "{}", b),
+			CfnValue::Null(_) => write!(f, "null"),
+			CfnValue::Ref { target, .. } => write!(f, "!Ref {}", target),
+			CfnValue::GetAtt {
+				target, attribute, ..
+			} => {
+				write!(f, "!GetAtt {}.{}", target, attribute)
+			}
+			CfnValue::Array(items, _) => {
+				write!(f, "[")?;
+				for (i, item) in items.iter().enumerate() {
+					if i > 0 {
+						write!(f, ", ")?;
+					}
+					write!(f, "{}", item)?;
+				}
+				write!(f, "]")
+			}
+			CfnValue::Object(map, _) => {
+				write!(f, "{{")?;
+				for (i, (k, v)) in map.iter().enumerate() {
+					if i > 0 {
+						write!(f, ", ")?;
+					}
+					write!(f, "{}: {}", k, v)?;
+				}
+				write!(f, "}}")
+			}
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -1574,5 +1670,85 @@ Resources:
 			"expected WA2_CFN_UNKNOWN_GETATT_ATTRIBUTE diagnostic, got: {:?}",
 			diags
 		);
+	}
+
+	#[test]
+	fn yaml_short_form_ref_converts_to_ref_value() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref OtherBucket
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		let bucket = &template.resources["MyBucket"];
+		let bucket_name = bucket
+			.properties
+			.get("BucketName")
+			.expect("BucketName property must exist");
+
+		match bucket_name {
+			CfnValue::Ref { target, .. } => {
+				assert_eq!(target, "OtherBucket");
+			}
+			other => panic!("expected Ref CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn yaml_short_form_getatt_converts_to_getatt_value() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Arn: !GetAtt MyBucket.Arn
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		let bucket = &template.resources["MyBucket"];
+		let arn = bucket
+			.properties
+			.get("Arn")
+			.expect("Arn property must exist");
+
+		match arn {
+			CfnValue::GetAtt {
+				target, attribute, ..
+			} => {
+				assert_eq!(target, "MyBucket");
+				assert_eq!(attribute, "Arn");
+			}
+			other => panic!("expected GetAtt CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn yaml_short_form_intrinsics_complete_check() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref OtherBucket
+      Arn: !GetAtt MyBucket.Arn
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let output = template.to_string();
+
+		let expected = r#"Template:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Arn: !GetAtt MyBucket.Arn
+      BucketName: !Ref OtherBucket
+"#;
+
+		assert_eq!(output.trim(), expected.trim());
 	}
 }
