@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::Range;
 
 /// CloudFormation template intermediate representation
+// Update CfnTemplate struct
 #[derive(Debug, Clone)]
 pub struct CfnTemplate {
 	pub resources: HashMap<String, CfnResource>,
-	// We'll add Parameters, Outputs, etc. later
+	pub parameters: HashMap<String, CfnParameter>,
 }
 
 /// A CloudFormation resource with position tracking
@@ -42,6 +43,21 @@ pub enum CfnValue {
 		attribute: String,
 		range: Range,
 	},
+}
+
+// Add to cfn_ir.rs after CfnResource struct
+
+/// A CloudFormation parameter declaration
+#[derive(Debug, Clone)]
+pub struct CfnParameter {
+	pub name: String,
+	pub parameter_type: String, // "String", "Number", "List<Number>", etc.
+	pub default_value: Option<CfnValue>,
+	pub description: Option<String>,
+
+	// Position tracking
+	pub name_range: Range,
+	pub type_range: Range,
 }
 
 impl CfnValue {
@@ -96,6 +112,7 @@ impl CfnTemplate {
 		if docs.is_empty() {
 			return Ok(CfnTemplate {
 				resources: HashMap::new(),
+				parameters: HashMap::new(),
 			});
 		}
 
@@ -104,6 +121,7 @@ impl CfnTemplate {
 
 	fn from_marked_yaml(root: &MarkedYaml, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
 		let mut resources = HashMap::new();
+		let mut parameters = HashMap::new();
 
 		let root_map = match root.data.as_mapping() {
 			Some(m) => m,
@@ -119,7 +137,67 @@ impl CfnTemplate {
 			}
 		};
 
-		// Find Resources section
+		// Parse Parameters section
+		let parameters_node = root_map
+			.iter()
+			.find(|(k, _)| k.data.as_str() == Some("Parameters"))
+			.map(|(_, v)| v);
+
+		if let Some(params_node) = parameters_node {
+			let params_map = match params_node.data.as_mapping() {
+				Some(m) => m,
+				None => {
+					return Err(vec![Diagnostic {
+						range: marked_yaml_to_range(params_node),
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_PARAMETERS".into())),
+						source: Some("wa2-lsp".into()),
+						message: "Template Parameters section must be a mapping".to_string(),
+						..Default::default()
+					}]);
+				}
+			};
+
+			let mut errors = Vec::new();
+			for (param_key, param_node) in params_map {
+				let param_name = match param_key.data.as_str() {
+					Some(s) => s.to_string(),
+					None => {
+						errors.push(Diagnostic {
+							range: marked_yaml_to_range(param_key),
+							severity: Some(DiagnosticSeverity::WARNING),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_PARAMETER_KEY_NOT_STRING".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message: "Template: parameter key is not a string".to_string(),
+							..Default::default()
+						});
+						continue;
+					}
+				};
+
+				match CfnParameter::from_marked_yaml(
+					param_name.clone(),
+					param_node,
+					marked_yaml_to_range(param_key),
+					uri,
+				) {
+					Ok(param) => {
+						parameters.insert(param_name, param);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
+			}
+
+			if !errors.is_empty() {
+				return Err(errors);
+			}
+		}
+
+		// Parse Resources section
 		let resources_node = root_map
 			.iter()
 			.find(|(k, _)| k.data.as_str() == Some("Resources"))
@@ -128,13 +206,14 @@ impl CfnTemplate {
 		let resources_node = match resources_node {
 			Some(v) => v,
 			None => {
-				// No Resources section - return empty template (warning handled elsewhere)
 				return Ok(CfnTemplate {
 					resources: HashMap::new(),
+					parameters, // Include parsed parameters
 				});
 			}
 		};
 
+		// ... existing Resources parsing ...
 		let resources_map = match resources_node.data.as_mapping() {
 			Some(m) => m,
 			None => {
@@ -149,7 +228,6 @@ impl CfnTemplate {
 			}
 		};
 
-		// Convert each resource
 		let mut errors = Vec::new();
 		for (logical_key, resource_node) in resources_map {
 			let logical_id = match logical_key.data.as_str() {
@@ -190,7 +268,10 @@ impl CfnTemplate {
 			return Err(errors);
 		}
 
-		Ok(CfnTemplate { resources })
+		Ok(CfnTemplate {
+			resources,
+			parameters,
+		})
 	}
 }
 
@@ -417,6 +498,79 @@ impl CfnValue {
 				// Invalid scalar value - treat as null
 				CfnValue::Null(range)
 			}
+		})
+	}
+}
+
+// CfnParameter::from_marked_yaml implementation
+impl CfnParameter {
+	fn from_marked_yaml(
+		name: String,
+		node: &MarkedYaml,
+		name_range: Range,
+		_uri: &Url,
+	) -> Result<Self, Vec<Diagnostic>> {
+		let param_map = match node.data.as_mapping() {
+			Some(m) => m,
+			None => {
+				return Err(vec![Diagnostic {
+					range: marked_yaml_to_range(node),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_PARAMETER_NOT_MAPPING".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Template: parameter `{name}` is not a mapping; \
+                         CloudFormation parameters must be mappings with `Type`."
+					),
+					..Default::default()
+				}]);
+			}
+		};
+
+		// Extract Type (required)
+		let (type_str, type_range) = param_map
+			.iter()
+			.find(|(k, _)| k.data.as_str() == Some("Type"))
+			.and_then(|(_, v)| {
+				v.data
+					.as_str()
+					.map(|s| (s.to_string(), marked_yaml_to_range(v)))
+			})
+			.ok_or_else(|| {
+				vec![Diagnostic {
+					range: name_range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_PARAMETER_TYPE_MISSING".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!("Template: parameter `{name}` is missing required `Type`."),
+					..Default::default()
+				}]
+			})?;
+
+		// Extract Default (optional)
+		let default_value = param_map
+			.iter()
+			.find(|(k, _)| k.data.as_str() == Some("Default"))
+			.map(|(_, v)| CfnValue::from_marked_yaml(v))
+			.transpose()?;
+
+		// Extract Description (optional)
+		let description = param_map
+			.iter()
+			.find(|(k, _)| k.data.as_str() == Some("Description"))
+			.and_then(|(_, v)| v.data.as_str().map(|s| s.to_string()));
+
+		Ok(CfnParameter {
+			name,
+			parameter_type: type_str,
+			default_value,
+			description,
+			name_range,
+			type_range,
 		})
 	}
 }
@@ -708,6 +862,7 @@ impl CfnTemplate {
 
 	fn from_json_ast(root: &Value, text: &str, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
 		let mut resources = HashMap::new();
+		let mut parameters = HashMap::new();
 
 		let root_obj = match root.as_object() {
 			Some(obj) => obj,
@@ -723,15 +878,58 @@ impl CfnTemplate {
 			}
 		};
 
+		// Parse Parameters section
+		if let Some(params_prop) = root_obj.get("Parameters") {
+			let params_obj = match params_prop.value.as_object() {
+				Some(obj) => obj,
+				None => {
+					return Err(vec![Diagnostic {
+						range: ranged_to_range(&params_prop.value, text),
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_PARAMETERS".into())),
+						source: Some("wa2-lsp".into()),
+						message: "Template Parameters section must be an object".to_string(),
+						..Default::default()
+					}]);
+				}
+			};
+
+			let mut errors = Vec::new();
+			for prop in params_obj.properties.iter() {
+				let param_name = prop.name.clone().into_string();
+				let name_range = ranged_to_range(&prop.name, text);
+				let param_value = prop.value.clone();
+
+				match CfnParameter::from_json_ast(
+					param_name.clone(),
+					&param_value,
+					name_range,
+					text,
+					uri,
+				) {
+					Ok(param) => {
+						parameters.insert(param_name, param);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
+			}
+
+			if !errors.is_empty() {
+				return Err(errors);
+			}
+		}
+
 		// Find Resources section
 		let resources_value = root_obj.get("Resources").map(|prop| prop.value.clone());
-
 		let resources_value = match resources_value {
 			Some(v) => v,
 			None => {
 				// No Resources section - return empty template
 				return Ok(CfnTemplate {
 					resources: HashMap::new(),
+					parameters: HashMap::new(),
 				});
 			}
 		};
@@ -777,7 +975,10 @@ impl CfnTemplate {
 			return Err(errors);
 		}
 
-		Ok(CfnTemplate { resources })
+		Ok(CfnTemplate {
+			resources,
+			parameters,
+		})
 	}
 }
 
@@ -977,6 +1178,76 @@ impl CfnValue {
 	}
 }
 
+impl CfnParameter {
+	fn from_json_ast(
+		name: String,
+		node: &Value,
+		name_range: Range,
+		text: &str,
+		_uri: &Url,
+	) -> Result<Self, Vec<Diagnostic>> {
+		let param_obj = match node.as_object() {
+			Some(o) => o,
+			None => {
+				return Err(vec![Diagnostic {
+					range: ranged_to_range(node, text),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_PARAMETER_NOT_OBJECT".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Template: parameter `{name}` is not an object; \
+                         CloudFormation parameters must be objects with `Type`."
+					),
+					..Default::default()
+				}]);
+			}
+		};
+
+		// Extract Type (required)
+		let (type_str, type_range) = param_obj
+			.get("Type")
+			.and_then(|prop| {
+				prop.value
+					.as_string_lit()
+					.map(|s| (s.value.to_string(), ranged_to_range(&prop.value, text)))
+			})
+			.ok_or_else(|| {
+				vec![Diagnostic {
+					range: name_range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_PARAMETER_TYPE_MISSING".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!("Template: parameter `{name}` is missing required `Type`."),
+					..Default::default()
+				}]
+			})?;
+
+		// Extract Default (optional)
+		let default_value = param_obj
+			.get("Default")
+			.map(|prop| CfnValue::from_json_ast(&prop.value, text))
+			.transpose()?;
+
+		// Extract Description (optional)
+		let description = param_obj
+			.get("Description")
+			.and_then(|prop| prop.value.as_string_lit().map(|s| s.value.to_string()));
+
+		Ok(CfnParameter {
+			name,
+			parameter_type: type_str,
+			default_value,
+			description,
+			name_range,
+			type_range,
+		})
+	}
+}
+
 /// Convert byte offset to line/column position
 fn byte_offset_to_position(text: &str, offset: usize) -> Position {
 	let mut line = 0u32;
@@ -1033,20 +1304,37 @@ use std::fmt;
 impl fmt::Display for CfnTemplate {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		writeln!(f, "Template:")?;
-		for (logical_id, resource) in &self.resources {
-			writeln!(f, "  {}:", logical_id)?;
-			// Write resource indented - each line from resource already has indentation
-			for line in resource.to_string().lines() {
-				writeln!(f, "{}", line)?;
+
+		// Display Parameters section
+		if !self.parameters.is_empty() {
+			writeln!(f, "{}Parameters:", " ".repeat(2))?;
+			let mut params: Vec<_> = self.parameters.iter().collect();
+			params.sort_by_key(|(name, _)| *name);
+			for (_, param) in params {
+				for line in param.to_string().lines() {
+					writeln!(f, "{}{}", " ".repeat(4), line)?;
+				}
 			}
 		}
+
+		// Display Resources section
+		if !self.resources.is_empty() {
+			writeln!(f, "{}Resources:", " ".repeat(2))?;
+			for (logical_id, resource) in &self.resources {
+				writeln!(f, "{}{}:", " ".repeat(4), logical_id)?;
+				for line in resource.to_string().lines() {
+					writeln!(f, "{}{}", " ".repeat(2), line)?;
+				}
+			}
+		}
+
 		Ok(())
 	}
 }
 
 impl fmt::Display for CfnResource {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		writeln!(f, "    Type: {}", self.resource_type)?;
+		writeln!(f, "{}Type: {}", " ".repeat(4), self.resource_type)?;
 		if !self.properties.is_empty() {
 			writeln!(f, "    Properties:")?;
 			// Sort properties by name for deterministic output
@@ -1054,7 +1342,7 @@ impl fmt::Display for CfnResource {
 			props.sort_by_key(|(name, _)| *name);
 
 			for (name, value) in props {
-				writeln!(f, "      {}: {}", name, value)?;
+				writeln!(f, "{}{}: {}", " ".repeat(6), name, value)?;
 			}
 		}
 		Ok(())
@@ -1095,6 +1383,20 @@ impl fmt::Display for CfnValue {
 				write!(f, "}}")
 			}
 		}
+	}
+}
+
+impl fmt::Display for CfnParameter {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		writeln!(f, "{}:", self.name)?;
+		writeln!(f, "  Type: {}", self.parameter_type)?;
+		if let Some(ref desc) = self.description {
+			writeln!(f, "  Description: {}", desc)?;
+		}
+		if let Some(ref default) = self.default_value {
+			writeln!(f, "  Default: {}", default)?;
+		}
+		Ok(())
 	}
 }
 
@@ -1742,13 +2044,84 @@ Resources:
 		let output = template.to_string();
 
 		let expected = r#"Template:
-  MyBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      Arn: !GetAtt MyBucket.Arn
-      BucketName: !Ref OtherBucket
+  Resources:
+    MyBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        Arn: !GetAtt MyBucket.Arn
+        BucketName: !Ref OtherBucket
 "#;
 
-		assert_eq!(output.trim(), expected.trim());
+		assert_eq!(output, expected);
+	}
+
+	#[test]
+	fn yaml_parses_parameters_section() {
+		let text = r#"
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Deployment environment
+  InstanceCount:
+    Type: Number
+    Default: 2
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		assert_eq!(template.parameters.len(), 2);
+		assert!(template.parameters.contains_key("Environment"));
+		assert!(template.parameters.contains_key("InstanceCount"));
+
+		let env_param = &template.parameters["Environment"];
+		assert_eq!(env_param.parameter_type, "String");
+		assert_eq!(
+			env_param.description,
+			Some("Deployment environment".to_string())
+		);
+		assert!(env_param.default_value.is_some());
+
+		let count_param = &template.parameters["InstanceCount"];
+		assert_eq!(count_param.parameter_type, "Number");
+	}
+
+	#[test]
+	fn json_parses_parameters_section() {
+		let text = r#"{
+  "Parameters": {
+    "Environment": {
+      "Type": "String",
+      "Default": "dev",
+      "Description": "Deployment environment"
+    },
+    "InstanceCount": {
+      "Type": "Number",
+      "Default": 2
+    }
+  },
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket"
+    }
+  }
+}"#;
+
+		let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+
+		assert_eq!(template.parameters.len(), 2);
+		assert!(template.parameters.contains_key("Environment"));
+		assert!(template.parameters.contains_key("InstanceCount"));
+
+		let env_param = &template.parameters["Environment"];
+		assert_eq!(env_param.parameter_type, "String");
+		assert_eq!(
+			env_param.description,
+			Some("Deployment environment".to_string())
+		);
 	}
 }
