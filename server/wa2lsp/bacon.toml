@@ -1,4 +1,4 @@
-default_job = "build"
+default = "test"
 
 [jobs.build]
 command = ["cargo", "build", "--release"]
