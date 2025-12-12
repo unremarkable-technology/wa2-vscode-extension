@@ -1,3 +1,4 @@
+use crate::spec::code_utils::names;
 use crate::spec::spec_store::{AttributeName, PropertyName, ResourceTypeId, SpecStore, TypeInfo};
 use crate::spec::symbol_table::SymbolTable;
 use crate::spec::type_resolver;
@@ -697,17 +698,29 @@ impl CfnTemplate {
 							&mut diagnostics,
 						);
 					}
+					// For unknown properties
 					None => {
-						// Unknown property
+						let candidates = resource_spec.properties.keys().map(|k| k.0.as_str());
+						let suggestion = names::find_closest(prop_name, candidates);
+
+						let message = if let Some((suggested, _)) = suggestion {
+							format!(
+								"Unknown property `{}` for resource type `{}` (in resource `{}`). Did you mean `{}`?",
+								prop_name, resource.resource_type, logical_id, suggested
+							)
+						} else {
+							format!(
+								"Unknown property `{}` for resource type `{}` (in resource `{}`)",
+								prop_name, resource.resource_type, logical_id
+							)
+						};
+
 						diagnostics.push(Diagnostic {
 							range: prop_value.range(),
 							severity: Some(DiagnosticSeverity::WARNING),
 							code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into())),
 							source: Some("wa2-lsp".into()),
-							message: format!(
-								"Unknown property `{}` for resource type `{}` (in resource `{}`)",
-								prop_name, resource.resource_type, logical_id
-							),
+							message,
 							..Default::default()
 						});
 					}
@@ -846,17 +859,34 @@ impl CfnTemplate {
 		match value {
 			CfnValue::Ref { target, range } => {
 				if !symbols.has_ref_target(target) {
+					let mut candidates: Vec<&str> = Vec::new();
+					candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
+					candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
+					candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
+
+					let suggestion = names::find_closest(target, candidates.into_iter());
+
+					let message = if let Some((suggested, _)) = suggestion {
+						format!(
+							"!Ref target `{}` does not exist. Did you mean `{}`?",
+							target, suggested
+						)
+					} else {
+						// No candidates at all (empty template?)
+						format!(
+							"!Ref target `{}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+							target
+						)
+					};
+
 					diagnostics.push(Diagnostic {
-                    range: *range,
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())),
-                    source: Some("wa2-lsp".into()),
-                    message: format!(
-                        "!Ref target `{}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
-                        target
-                    ),
-                    ..Default::default()
-                });
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())),
+						source: Some("wa2-lsp".into()),
+						message,
+						..Default::default()
+					});
 				}
 			}
 			CfnValue::GetAtt {
@@ -879,12 +909,28 @@ impl CfnTemplate {
 					return; // Can't validate attribute if resource doesn't exist
 				}
 
-				// NEW: Validate attribute exists for the resource type
+				// Validate attribute exists for the resource type
 				if let Some(resource_entry) = symbols.resources.get(target) {
 					let type_id = ResourceTypeId(resource_entry.resource_type.clone());
 					if let Some(resource_spec) = spec.resource_types.get(&type_id) {
 						let attr_name = AttributeName(attribute.clone());
 						if !resource_spec.attributes.contains_key(&attr_name) {
+							let candidates = resource_spec.attributes.keys().map(|k| k.0.as_str());
+							let suggestion = names::find_closest(attribute, candidates);
+
+							let message = if let Some((suggested, _)) = suggestion {
+								format!(
+									"!GetAtt attribute `{}` does not exist on resource type `{}`. Did you mean `{}`?",
+									attribute, resource_entry.resource_type, suggested
+								)
+							} else {
+								// This only happens if the resource has NO attributes at all
+								format!(
+									"!GetAtt attribute `{}` does not exist on resource type `{}`. This resource type has no attributes.",
+									attribute, resource_entry.resource_type
+								)
+							};
+
 							diagnostics.push(Diagnostic {
 								range: *range,
 								severity: Some(DiagnosticSeverity::ERROR),
@@ -892,10 +938,7 @@ impl CfnTemplate {
 									"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
 								)),
 								source: Some("wa2-lsp".into()),
-								message: format!(
-									"!GetAtt attribute `{}` does not exist on resource type `{}`.",
-									attribute, resource_entry.resource_type
-								),
+								message,
 								..Default::default()
 							});
 						}
@@ -2474,9 +2517,7 @@ Resources:
 		);
 	}
 
-	use crate::spec::spec_store::{
-		AttributeName, AttributeShape
-	};
+	use crate::spec::spec_store::{AttributeName, AttributeShape};
 	#[test]
 	fn test_invalid_getatt_attribute() {
 		// Create spec with S3::Bucket that has only "Arn" attribute
