@@ -1,7 +1,8 @@
 use crate::spec::code_utils::names;
+use crate::spec::intrinsics::IntrinsicKind;
 use crate::spec::spec_store::{AttributeName, PropertyName, ResourceTypeId, SpecStore, TypeInfo};
 use crate::spec::symbol_table::SymbolTable;
-use crate::spec::type_resolver;
+use crate::spec::{intrinsics, type_resolver};
 use std::collections::HashMap;
 use tower_lsp::lsp_types::Range;
 
@@ -46,6 +47,13 @@ pub enum CfnValue {
 		attribute: String,
 		range: Range,
 	},
+
+	// !Sub / { "Fn::Sub": "template string" } or { "Fn::Sub": ["template", {vars}] }
+	Sub {
+		template: String,
+		variables: Option<HashMap<String, CfnValue>>, // For long form with explicit variables
+		range: Range,
+	},
 }
 
 // Add to cfn_ir.rs after CfnResource struct
@@ -75,6 +83,7 @@ impl CfnValue {
 			CfnValue::Object(_, r) => *r,
 			CfnValue::Ref { range, .. } => *range,
 			CfnValue::GetAtt { range, .. } => *range,
+			CfnValue::Sub { range, .. } => *range,
 		}
 	}
 
@@ -401,77 +410,123 @@ impl CfnValue {
 			YamlData::Tagged(tag, inner) => {
 				let range = marked_yaml_to_range(node);
 
-				match tag.as_ref().suffix.as_str() {
-					"Ref" => {
-						if let YamlData::Value(Scalar::String(target)) = &inner.data {
-							return Ok(CfnValue::Ref {
-								target: target.to_string(),
-								range,
-							});
-						} else {
-							return Err(vec![Diagnostic {
-								range,
-								severity: Some(DiagnosticSeverity::ERROR),
-								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_REF".into())),
-								source: Some("wa2-lsp".into()),
-								message: "Malformed !Ref: expected a string value".to_string(),
-								..Default::default()
-							}]);
+				// Check if this is a known intrinsic
+				if let Some(intrinsic) = intrinsics::get_intrinsic_by_tag(&tag.suffix) {
+					match intrinsic.kind {
+						IntrinsicKind::Ref => {
+							if let YamlData::Value(Scalar::String(target)) = &inner.data {
+								return Ok(CfnValue::Ref {
+									target: target.to_string(),
+									range,
+								});
+							} else {
+								return Err(vec![Diagnostic {
+									range,
+									severity: Some(DiagnosticSeverity::ERROR),
+									code: Some(NumberOrString::String(
+										"WA2_CFN_MALFORMED_REF".into(),
+									)),
+									source: Some("wa2-lsp".into()),
+									message: "Malformed !Ref: expected a string value".to_string(),
+									..Default::default()
+								}]);
+							}
 						}
-					}
-					"GetAtt" => {
-						if let YamlData::Value(Scalar::String(s)) = &inner.data {
-							if let Some((target, attribute)) = s.split_once('.') {
+						IntrinsicKind::GetAtt => {
+							if let YamlData::Value(Scalar::String(s)) = &inner.data {
+								if let Some((target, attribute)) = s.split_once('.') {
+									return Ok(CfnValue::GetAtt {
+										target: target.to_string(),
+										attribute: attribute.to_string(),
+										range,
+									});
+								} else {
+									return Err(vec![Diagnostic {
+										range,
+										severity: Some(DiagnosticSeverity::ERROR),
+										code: Some(NumberOrString::String(
+											"WA2_CFN_MALFORMED_GETATT".into(),
+										)),
+										source: Some("wa2-lsp".into()),
+										message: format!(
+											"Malformed !GetAtt: expected 'ResourceName.AttributeName', got '{}'",
+											s
+										),
+										..Default::default()
+									}]);
+								}
+							}
+							// Array form: !GetAtt [Resource, Attribute]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 2 && let (
+								YamlData::Value(Scalar::String(target)),
+								YamlData::Value(Scalar::String(attribute)),
+							) = (&seq[0].data, &seq[1].data)
+							{
 								return Ok(CfnValue::GetAtt {
 									target: target.to_string(),
 									attribute: attribute.to_string(),
 									range,
 								});
-							} else {
-								// Malformed !GetAtt - missing dot separator
-								return Err(vec![Diagnostic {
-									range,
-									severity: Some(DiagnosticSeverity::ERROR),
-									code: Some(NumberOrString::String(
-										"WA2_CFN_MALFORMED_GETATT".into(),
-									)),
-									source: Some("wa2-lsp".into()),
-									message: format!(
-										"Malformed !GetAtt: expected 'ResourceName.AttributeName', got '{}'",
-										s
-									),
-									..Default::default()
-								}]);
 							}
-						}
-						// If not a string, try to parse as array form
-						if let YamlData::Sequence(seq) = &inner.data
-							&& seq.len() == 2 && let (
-							YamlData::Value(Scalar::String(target)),
-							YamlData::Value(Scalar::String(attribute)),
-						) = (&seq[0].data, &seq[1].data)
-						{
-							return Ok(CfnValue::GetAtt {
-								target: target.to_string(),
-								attribute: attribute.to_string(),
-								range,
-							});
-						}
 
-						// Invalid format
-						return Err(vec![Diagnostic {
-							range,
-							severity: Some(DiagnosticSeverity::ERROR),
-							code: Some(NumberOrString::String("WA2_CFN_MALFORMED_GETATT".into())),
-							source: Some("wa2-lsp".into()),
-							message: "Malformed !GetAtt: expected 'ResourceName.AttributeName' or array [ResourceName, AttributeName]".to_string(),
-							..Default::default()
-						}]);
+							return Err(vec![Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String("WA2_CFN_MALFORMED_GETATT".into())),
+                source: Some("wa2-lsp".into()),
+                message: "Malformed !GetAtt: expected 'ResourceName.AttributeName' or array [ResourceName, AttributeName]".to_string(),
+                ..Default::default()
+            }]);
+						}
+						IntrinsicKind::Sub => {
+							// String form: !Sub "template with ${Var}"
+							if let YamlData::Value(Scalar::String(template)) = &inner.data {
+								return Ok(CfnValue::Sub {
+									template: template.to_string(),
+									variables: None,
+									range,
+								});
+							}
+
+							// Array form: !Sub ["template", {Var1: val1, Var2: val2}]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 2 && let YamlData::Value(Scalar::String(template)) =
+								&seq[0].data
+							{
+								let variables = if let YamlData::Mapping(_) = &seq[1].data {
+									Some(
+										CfnValue::from_marked_yaml(&seq[1])?
+											.as_object()
+											.cloned()
+											.unwrap_or_default(),
+									)
+								} else {
+									None
+								};
+
+								return Ok(CfnValue::Sub {
+									template: template.to_string(),
+									variables,
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_SUB".into())),
+								source: Some("wa2-lsp".into()),
+								message:
+									"Malformed !Sub: expected string or array [template, variables]"
+										.to_string(),
+								..Default::default()
+							}]);
+						}
 					}
-					_ => {}
 				}
 
-				// Fallback for unknown tags
+				// Unknown tag - fallback
 				return CfnValue::from_marked_yaml(inner);
 			}
 
@@ -930,6 +985,34 @@ impl CfnTemplate {
 		}
 	}
 
+	// Add this function before validate_intrinsics:
+	/// Extract ${Variable} references from a Sub template string
+	fn extract_sub_variables(template: &str) -> Vec<String> {
+		let mut variables = Vec::new();
+		let mut chars = template.chars().peekable();
+
+		while let Some(ch) = chars.next() {
+			if ch == '$' && chars.peek() == Some(&'{') {
+				chars.next(); // consume '{'
+				let mut var_name = String::new();
+
+				while let Some(&ch) = chars.peek() {
+					if ch == '}' {
+						chars.next(); // consume '}'
+						if !var_name.is_empty() {
+							variables.push(var_name);
+						}
+						break;
+					}
+					var_name.push(ch);
+					chars.next();
+				}
+			}
+		}
+
+		variables
+	}
+
 	fn validate_intrinsics(
 		value: &CfnValue,
 		symbols: &SymbolTable,
@@ -1045,6 +1128,67 @@ impl CfnTemplate {
 
 							diagnostics.push(diag);
 						}
+					}
+				}
+			}
+			// In validate_intrinsics() method, add before the Array/Object cases:
+			CfnValue::Sub {
+				template,
+				variables,
+				range,
+			} => {
+				// Extract ${Variable} references from template
+				let var_refs = Self::extract_sub_variables(template);
+
+				for var_ref in var_refs {
+					// Check if variable exists in explicit variables map
+					if let Some(vars) = variables {
+						if vars.contains_key(&var_ref) {
+							continue; // Found in explicit variables
+						}
+					}
+
+					// Check if it's a valid Ref target (resource/parameter/pseudo-param)
+					if !symbols.has_ref_target(&var_ref) {
+						let mut candidates: Vec<&str> = Vec::new();
+						candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
+						candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
+						candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
+
+						let suggestion_data = crate::spec::code_utils::names::find_closest(
+							&var_ref,
+							candidates.into_iter(),
+						);
+
+						let message = if let Some((suggested, _)) = suggestion_data {
+							format!(
+								"!Sub variable `${{{}}}` does not exist. Did you mean `{}`?",
+								var_ref, suggested
+							)
+						} else {
+							format!(
+								"!Sub variable `${{{}}}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+								var_ref
+							)
+						};
+
+						diagnostics.push(Diagnostic {
+							range: *range,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_INVALID_SUB_VARIABLE".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message,
+							..Default::default()
+						});
+					}
+				}
+
+				// Recursively validate variable values if present
+				if let Some(vars) = variables {
+					for val in vars.values() {
+						Self::validate_intrinsics(val, symbols, diagnostics, spec);
 					}
 				}
 			}
@@ -1370,45 +1514,78 @@ impl CfnValue {
 				let key = prop.name.clone().into_string();
 				let value = &prop.value;
 
-				// For intrinsics, we want the range of the *value* node
-				// (the Ref / Fn::GetAtt payload) rather than the wrapper object.
-				let inner_range = json_ast_to_range(value, text);
+				// Check if this is a known intrinsic
+				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(&key) {
+					let inner_range = json_ast_to_range(value, text);
 
-				match key.as_str() {
-					"Ref" => {
-						if let Some(s) = value.as_string_lit() {
-							return Ok(CfnValue::Ref {
-								target: s.value.to_string(),
-								range: inner_range,
-							});
+					match intrinsic.kind {
+						IntrinsicKind::Ref => {
+							if let Some(s) = value.as_string_lit() {
+								return Ok(CfnValue::Ref {
+									target: s.value.to_string(),
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::GetAtt => {
+							// Array form: ["LogicalId", "Attribute"]
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 2
+								&& let (Some(target), Some(attribute)) = (
+									arr.elements[0].as_string_lit(),
+									arr.elements[1].as_string_lit(),
+								) {
+								return Ok(CfnValue::GetAtt {
+									target: target.value.to_string(),
+									attribute: attribute.value.to_string(),
+									range: inner_range,
+								});
+							}
+							// String form: "LogicalId.Attribute"
+							if let Some(s) = value.as_string_lit()
+								&& let Some((target, attribute)) = s.value.split_once('.')
+							{
+								return Ok(CfnValue::GetAtt {
+									target: target.to_string(),
+									attribute: attribute.to_string(),
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::Sub => {
+							// String form: {"Fn::Sub": "template"}
+							if let Some(s) = value.as_string_lit() {
+								return Ok(CfnValue::Sub {
+									template: s.value.to_string(),
+									variables: None,
+									range: inner_range,
+								});
+							}
+
+							// Array form: {"Fn::Sub": ["template", {vars}]}
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 2
+								&& let Some(template) = arr.elements[0].as_string_lit()
+							{
+								let variables = if arr.elements[1].as_object().is_some() {
+									Some(
+										CfnValue::from_json_ast(&arr.elements[1], text)?
+											.as_object()
+											.cloned()
+											.unwrap_or_default(),
+									)
+								} else {
+									None
+								};
+
+								return Ok(CfnValue::Sub {
+									template: template.value.to_string(),
+									variables,
+									range: inner_range,
+								});
+							}
 						}
 					}
-					"Fn::GetAtt" => {
-						// ["LogicalId", "Attribute"]
-						if let Some(arr) = value.as_array()
-							&& arr.elements.len() == 2
-							&& let (Some(target), Some(attribute)) = (
-								arr.elements[0].as_string_lit(),
-								arr.elements[1].as_string_lit(),
-							) {
-							return Ok(CfnValue::GetAtt {
-								target: target.value.to_string(),
-								attribute: attribute.value.to_string(),
-								range: inner_range,
-							});
-						}
-						// "LogicalId.Attribute"
-						if let Some(s) = value.as_string_lit()
-							&& let Some((target, attribute)) = s.value.split_once('.')
-						{
-							return Ok(CfnValue::GetAtt {
-								target: target.to_string(),
-								attribute: attribute.to_string(),
-								range: inner_range,
-							});
-						}
-					}
-					_ => {}
 				}
 			}
 
@@ -1610,6 +1787,18 @@ impl fmt::Display for CfnValue {
 				target, attribute, ..
 			} => {
 				write!(f, "!GetAtt {}.{}", target, attribute)
+			}
+			// In Display for CfnValue:
+			CfnValue::Sub {
+				template,
+				variables,
+				..
+			} => {
+				if let Some(_vars) = variables {
+					write!(f, "!Sub [{}, {{...}}]", template)
+				} else {
+					write!(f, "!Sub \"{}\"", template)
+				}
 			}
 			CfnValue::Array(items, _) => {
 				write!(f, "[")?;
@@ -2738,5 +2927,55 @@ Resources:
 			"Should not have invalid attribute error, got: {:?}",
 			diagnostics
 		);
+	}
+
+	#[test]
+	fn yaml_sub_string_form() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "my-bucket-${AWS::Region}"
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let bucket = &template.resources["MyBucket"];
+		let bucket_name = bucket.properties.get("BucketName").unwrap();
+
+		match bucket_name {
+			CfnValue::Sub {
+				template,
+				variables,
+				..
+			} => {
+				assert_eq!(template, "my-bucket-${AWS::Region}");
+				assert!(variables.is_none());
+			}
+			other => panic!("expected Sub CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_invalid_sub_variable() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "my-bucket-${NonExistent}"
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec();
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(diagnostics.iter().any(|d| {
+			d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_INVALID_SUB_VARIABLE".into(),
+				)) && d.message.contains("NonExistent")
+		}));
 	}
 }

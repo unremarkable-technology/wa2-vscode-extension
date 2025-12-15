@@ -2,6 +2,8 @@
 //!
 //! Given a CfnValue, resolves what TypeInfo it produces at runtime.
 
+use crate::spec::spec_store::CollectionKind;
+
 use super::cfn_ir::CfnValue;
 use super::spec_store::{
 	AttributeName, PrimitiveType, ResourceTypeId, ShapeKind, SpecStore, TypeInfo,
@@ -13,17 +15,17 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 	match value {
 		CfnValue::String(..) => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::String),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 
 		CfnValue::Number(..) => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::Double),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 
 		CfnValue::Bool(..) => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::Boolean),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 
 		CfnValue::Null(..) => None,
@@ -35,7 +37,7 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 				.first()
 				.and_then(|item| resolve_type(item, symbols, spec))
 				.map(|mut item_type| {
-					item_type.collection = super::spec_store::CollectionKind::List;
+					item_type.collection = CollectionKind::List;
 					item_type
 				})
 		}
@@ -44,7 +46,7 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 			// Objects are complex - for now return Any
 			Some(TypeInfo {
 				kind: ShapeKind::Any,
-				collection: super::spec_store::CollectionKind::Scalar,
+				collection: CollectionKind::Scalar,
 			})
 		}
 
@@ -53,6 +55,14 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 		CfnValue::GetAtt {
 			target, attribute, ..
 		} => resolve_getatt_type(target, attribute, symbols, spec),
+
+		CfnValue::Sub { .. } => {
+			// Sub always returns String
+			Some(TypeInfo {
+				kind: ShapeKind::Primitive(PrimitiveType::String),
+				collection: CollectionKind::Scalar,
+			})
+		}
 	}
 }
 
@@ -72,7 +82,7 @@ fn resolve_ref_type(target: &str, symbols: &SymbolTable, spec: &SpecStore) -> Op
 			// Default: Ref returns the logical ID as a String
 			return Some(TypeInfo {
 				kind: ShapeKind::Primitive(PrimitiveType::String),
-				collection: super::spec_store::CollectionKind::Scalar,
+				collection: CollectionKind::Scalar,
 			});
 		}
 	}
@@ -117,21 +127,21 @@ fn parse_parameter_type(param_type: &str) -> Option<TypeInfo> {
 	match param_type {
 		"String" => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::String),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 		"Number" => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::Double),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 		"CommaDelimitedList" => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::String),
-			collection: super::spec_store::CollectionKind::List,
+			collection: CollectionKind::List,
 		}),
 		s if s.starts_with("List<") && s.ends_with('>') => {
 			// Extract inner type, e.g., "List<Number>" -> "Number"
 			let inner = &s[5..s.len() - 1];
 			parse_parameter_type(inner).map(|mut inner_type| {
-				inner_type.collection = super::spec_store::CollectionKind::List;
+				inner_type.collection = CollectionKind::List;
 				inner_type
 			})
 		}
@@ -145,7 +155,7 @@ fn parse_parameter_type(param_type: &str) -> Option<TypeInfo> {
 		| "AWS::EC2::VPC::Id"
 		| "AWS::Route53::HostedZone::Id" => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::String),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 		_ => None,
 	}
@@ -157,11 +167,11 @@ fn pseudo_parameter_type(name: &str) -> Option<TypeInfo> {
 		"AWS::AccountId" | "AWS::Region" | "AWS::StackId" | "AWS::StackName" | "AWS::URLSuffix"
 		| "AWS::Partition" => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::String),
-			collection: super::spec_store::CollectionKind::Scalar,
+			collection: CollectionKind::Scalar,
 		}),
 		"AWS::NotificationARNs" => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::String),
-			collection: super::spec_store::CollectionKind::List,
+			collection: CollectionKind::List,
 		}),
 		"AWS::NoValue" => None, // Special - removes the property
 		_ => None,
