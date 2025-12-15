@@ -106,6 +106,34 @@ impl CfnValue {
 use saphyr::{LoadableYamlNode, MarkedYaml, ScanError};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Url};
 
+// In cfn_ir.rs, create a helper to build diagnostics with suggestions
+fn create_diagnostic_with_suggestion(
+	range: Range,
+	severity: DiagnosticSeverity,
+	code: &str,
+	message: String,
+	suggestion: Option<String>,
+) -> Diagnostic {
+	let mut diag = Diagnostic {
+		range,
+		severity: Some(severity),
+		code: Some(NumberOrString::String(code.into())),
+		source: Some("wa2-lsp".into()),
+		message,
+		..Default::default()
+	};
+
+	// Store suggestion in data field as JSON
+	if let Some(suggestion) = suggestion
+		&& let Ok(json) = serde_json::to_value(serde_json::json!({
+			"suggestion": suggestion
+		})) {
+		diag.data = Some(json);
+	}
+
+	diag
+}
+
 impl CfnTemplate {
 	/// Parse a CloudFormation template from YAML text
 	pub fn from_yaml(text: &str, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
@@ -380,11 +408,48 @@ impl CfnValue {
 								target: target.to_string(),
 								range,
 							});
+						} else {
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_REF".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Ref: expected a string value".to_string(),
+								..Default::default()
+							}]);
 						}
 					}
 					"GetAtt" => {
-						if let YamlData::Value(Scalar::String(s)) = &inner.data
-							&& let Some((target, attribute)) = s.split_once('.')
+						if let YamlData::Value(Scalar::String(s)) = &inner.data {
+							if let Some((target, attribute)) = s.split_once('.') {
+								return Ok(CfnValue::GetAtt {
+									target: target.to_string(),
+									attribute: attribute.to_string(),
+									range,
+								});
+							} else {
+								// Malformed !GetAtt - missing dot separator
+								return Err(vec![Diagnostic {
+									range,
+									severity: Some(DiagnosticSeverity::ERROR),
+									code: Some(NumberOrString::String(
+										"WA2_CFN_MALFORMED_GETATT".into(),
+									)),
+									source: Some("wa2-lsp".into()),
+									message: format!(
+										"Malformed !GetAtt: expected 'ResourceName.AttributeName', got '{}'",
+										s
+									),
+									..Default::default()
+								}]);
+							}
+						}
+						// If not a string, try to parse as array form
+						if let YamlData::Sequence(seq) = &inner.data
+							&& seq.len() == 2 && let (
+							YamlData::Value(Scalar::String(target)),
+							YamlData::Value(Scalar::String(attribute)),
+						) = (&seq[0].data, &seq[1].data)
 						{
 							return Ok(CfnValue::GetAtt {
 								target: target.to_string(),
@@ -392,6 +457,16 @@ impl CfnValue {
 								range,
 							});
 						}
+
+						// Invalid format
+						return Err(vec![Diagnostic {
+							range,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String("WA2_CFN_MALFORMED_GETATT".into())),
+							source: Some("wa2-lsp".into()),
+							message: "Malformed !GetAtt: expected 'ResourceName.AttributeName' or array [ResourceName, AttributeName]".to_string(),
+							..Default::default()
+						}]);
 					}
 					_ => {}
 				}
@@ -701,28 +776,33 @@ impl CfnTemplate {
 					// For unknown properties
 					None => {
 						let candidates = resource_spec.properties.keys().map(|k| k.0.as_str());
-						let suggestion = names::find_closest(prop_name, candidates);
+						let suggestion_data = names::find_closest(prop_name, candidates);
 
-						let message = if let Some((suggested, _)) = suggestion {
-							format!(
-								"Unknown property `{}` for resource type `{}` (in resource `{}`). Did you mean `{}`?",
-								prop_name, resource.resource_type, logical_id, suggested
+						let (message, suggestion) = if let Some((suggested, _)) = suggestion_data {
+							(
+								format!(
+									"Unknown property `{}` for resource type `{}` (in resource `{}`). Did you mean `{}`?",
+									prop_name, resource.resource_type, logical_id, suggested
+								),
+								Some(suggested.to_string()),
 							)
 						} else {
-							format!(
-								"Unknown property `{}` for resource type `{}` (in resource `{}`)",
-								prop_name, resource.resource_type, logical_id
+							(
+								format!(
+									"Unknown property `{}` for resource type `{}` (in resource `{}`)",
+									prop_name, resource.resource_type, logical_id
+								),
+								None,
 							)
 						};
 
-						diagnostics.push(Diagnostic {
-							range: prop_value.range(),
-							severity: Some(DiagnosticSeverity::WARNING),
-							code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_PROPERTY".into())),
-							source: Some("wa2-lsp".into()),
+						diagnostics.push(create_diagnostic_with_suggestion(
+							prop_value.range(),
+							DiagnosticSeverity::WARNING,
+							"WA2_CFN_UNKNOWN_PROPERTY",
 							message,
-							..Default::default()
-						});
+							suggestion,
+						));
 					}
 				}
 
@@ -858,35 +938,40 @@ impl CfnTemplate {
 	) {
 		match value {
 			CfnValue::Ref { target, range } => {
+				// For invalid Ref
 				if !symbols.has_ref_target(target) {
 					let mut candidates: Vec<&str> = Vec::new();
 					candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
 					candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
 					candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
 
-					let suggestion = names::find_closest(target, candidates.into_iter());
+					let suggestion_data = names::find_closest(target, candidates.into_iter());
 
-					let message = if let Some((suggested, _)) = suggestion {
-						format!(
-							"!Ref target `{}` does not exist. Did you mean `{}`?",
-							target, suggested
+					let (message, suggestion) = if let Some((suggested, _)) = suggestion_data {
+						(
+							format!(
+								"!Ref target `{}` does not exist. Did you mean `{}`?",
+								target, suggested
+							),
+							Some(suggested.to_string()),
 						)
 					} else {
-						// No candidates at all (empty template?)
-						format!(
-							"!Ref target `{}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
-							target
+						(
+							format!(
+								"!Ref target `{}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+								target
+							),
+							None,
 						)
 					};
 
-					diagnostics.push(Diagnostic {
-						range: *range,
-						severity: Some(DiagnosticSeverity::ERROR),
-						code: Some(NumberOrString::String("WA2_CFN_INVALID_REF".into())),
-						source: Some("wa2-lsp".into()),
+					diagnostics.push(create_diagnostic_with_suggestion(
+						*range,
+						DiagnosticSeverity::ERROR,
+						"WA2_CFN_INVALID_REF",
 						message,
-						..Default::default()
-					});
+						suggestion,
+					));
 				}
 			}
 			CfnValue::GetAtt {
@@ -914,24 +999,36 @@ impl CfnTemplate {
 					let type_id = ResourceTypeId(resource_entry.resource_type.clone());
 					if let Some(resource_spec) = spec.resource_types.get(&type_id) {
 						let attr_name = AttributeName(attribute.clone());
+						// For GetAtt attributes
 						if !resource_spec.attributes.contains_key(&attr_name) {
 							let candidates = resource_spec.attributes.keys().map(|k| k.0.as_str());
-							let suggestion = names::find_closest(attribute, candidates);
+							let suggestion_data = names::find_closest(attribute, candidates);
 
-							let message = if let Some((suggested, _)) = suggestion {
-								format!(
-									"!GetAtt attribute `{}` does not exist on resource type `{}`. Did you mean `{}`?",
-									attribute, resource_entry.resource_type, suggested
+							let (message, suggestion) = if let Some((suggested, _)) =
+								suggestion_data
+							{
+								(
+									format!(
+										"!GetAtt attribute `{}` does not exist on resource type `{}`. Did you mean `{}`?",
+										attribute, resource_entry.resource_type, suggested
+									),
+									Some(serde_json::json!({
+										"kind": "getatt",
+										"target": target,
+										"attribute": suggested
+									})),
 								)
 							} else {
-								// This only happens if the resource has NO attributes at all
-								format!(
-									"!GetAtt attribute `{}` does not exist on resource type `{}`. This resource type has no attributes.",
-									attribute, resource_entry.resource_type
+								(
+									format!(
+										"!GetAtt attribute `{}` does not exist on resource type `{}`. This resource type has no attributes.",
+										attribute, resource_entry.resource_type
+									),
+									None,
 								)
 							};
 
-							diagnostics.push(Diagnostic {
+							let mut diag = Diagnostic {
 								range: *range,
 								severity: Some(DiagnosticSeverity::ERROR),
 								code: Some(NumberOrString::String(
@@ -940,7 +1037,13 @@ impl CfnTemplate {
 								source: Some("wa2-lsp".into()),
 								message,
 								..Default::default()
-							});
+							};
+
+							if let Some(sugg) = suggestion {
+								diag.data = Some(sugg);
+							}
+
+							diagnostics.push(diag);
 						}
 					}
 				}

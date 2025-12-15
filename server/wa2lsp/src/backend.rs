@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -58,14 +58,19 @@ impl LanguageServer for Backend {
 	async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
 		Ok(InitializeResult {
 			capabilities: ServerCapabilities {
-				text_document_sync: Some(TextDocumentSyncCapability::Kind(
-					TextDocumentSyncKind::FULL,
+				text_document_sync: Some(TextDocumentSyncCapability::Options(
+					TextDocumentSyncOptions {
+						open_close: Some(true),
+						change: Some(TextDocumentSyncKind::FULL),
+						..Default::default()
+					},
 				)),
-				..ServerCapabilities::default()
+				code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+				..Default::default()
 			},
 			server_info: Some(ServerInfo {
-				name: "WA2".to_string(),
-				version: None,
+				name: "wa2-lsp".to_string(),
+				version: Some(env!("CARGO_PKG_VERSION").to_string()),
 			}),
 		})
 	}
@@ -218,6 +223,98 @@ impl LanguageServer for Backend {
 
 	async fn did_close(&self, _params: DidCloseTextDocumentParams) {
 		// no-op for now
+	}
+
+	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+		let uri = params.text_document.uri;
+
+		eprintln!(
+			"code_action called, diagnostics: {}",
+			params.context.diagnostics.len()
+		);
+
+		let mut actions = Vec::new();
+
+		// Check each diagnostic in the range
+		for diagnostic in &params.context.diagnostics {
+			eprintln!("Checking diagnostic: {:?}", diagnostic.code);
+			eprintln!("Diagnostic data: {:?}", diagnostic.data);
+
+			// Extract suggestion from diagnostic data
+			if let Some(ref data) = diagnostic.data {
+				eprintln!("Has data!");
+				if let Ok(obj) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+					data.clone(),
+				) {
+					eprintln!("Parsed as map, keys: {:?}", obj.keys().collect::<Vec<_>>());
+					if let Some(kind) = obj.get("kind").and_then(|v| v.as_str()) {
+						eprintln!("Kind: {}", kind);
+						let (title, new_text) = match kind {
+							"getatt" => {
+								let target =
+									obj.get("target").and_then(|v| v.as_str()).unwrap_or("");
+								let attribute =
+									obj.get("attribute").and_then(|v| v.as_str()).unwrap_or("");
+								(
+									format!("Change attribute to '{}'", attribute),
+									format!("{}.{}", target, attribute), // Just Target.Attribute
+								)
+							}
+							"ref" => {
+								let target =
+									obj.get("target").and_then(|v| v.as_str()).unwrap_or("");
+								(
+									format!("Change to '{}'", target),
+									target.to_string(), // Just the target
+								)
+							}
+							"property" => {
+								let property =
+									obj.get("property").and_then(|v| v.as_str()).unwrap_or("");
+								(format!("Change to '{}'", property), property.to_string())
+							}
+							_ => continue,
+						};
+						eprintln!("Creating code action: {} -> {}", title, new_text);
+
+						let edit = TextEdit {
+							range: diagnostic.range,
+							new_text,
+						};
+
+						let mut changes = HashMap::new();
+						changes.insert(uri.clone(), vec![edit]);
+
+						let workspace_edit = WorkspaceEdit {
+							changes: Some(changes),
+							..Default::default()
+						};
+
+						let action = CodeAction {
+							title,
+							kind: Some(CodeActionKind::QUICKFIX),
+							diagnostics: Some(vec![diagnostic.clone()]),
+							edit: Some(workspace_edit),
+							..Default::default()
+						};
+
+						actions.push(CodeActionOrCommand::CodeAction(action));
+					}
+				} else {
+					eprintln!("Failed to parse data as map");
+				}
+			} else {
+				eprintln!("No data in diagnostic");
+			}
+		}
+
+		eprintln!("Returning {} actions", actions.len());
+
+		if actions.is_empty() {
+			Ok(None)
+		} else {
+			Ok(Some(actions))
+		}
 	}
 }
 
