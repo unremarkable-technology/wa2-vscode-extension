@@ -1,0 +1,173 @@
+# Comprehensive CloudFormation template demonstrating all CFN intrinsics
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment
+  
+  EnableBackups:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable automated backups
+
+Conditions:
+  # Equals: Compare environment to "prod"
+  IsProduction: !Equals [!Ref Environment, "prod"]
+  
+  # Not: Negate a condition
+  IsNotProduction: !Not [!Equals [!Ref Environment, "prod"]]
+  
+  # And: Multiple conditions must be true
+  IsProdWithBackups: !And
+    - !Equals [!Ref Environment, "prod"]
+    - !Equals [!Ref EnableBackups, "true"]
+  
+  # Or: At least one condition must be true
+  IsProdOrStaging: !Or
+    - !Equals [!Ref Environment, "prod"]
+    - !Equals [!Ref Environment, "staging"]
+  
+  # Condition: Reference another condition
+  ShouldUsePremiumTier: !Condition IsProduction
+
+Resources:
+  # S3 Bucket with comprehensive intrinsic usage
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Sub: String substitution with variables
+      BucketName: !Sub "app-${Environment}-${AWS::AccountId}"
+      
+      # If: Conditional property value
+      VersioningConfiguration:
+        Status: !If [IsProduction, "Enabled", "Suspended"]
+      
+      Tags:
+        - Key: Environment
+          # Ref: Reference to parameter
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Region
+          # Ref: Reference to pseudo-parameter
+          Value: !Ref AWS::Region
+
+  # Lambda Function using bucket outputs
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      # Join: Concatenate strings with delimiter
+      FunctionName: !Join 
+        - "-"
+        - - "processor"
+          - !Ref Environment
+          - "function"
+      
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/LambdaExecutionRole"
+      
+		# Required Code property
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {'statusCode': 200, 'body': 'Hello from Lambda'}
+				  
+      # If with Condition reference: Conditional timeout
+      Timeout: !If [ShouldUsePremiumTier, 300, 30]
+      
+      # If with nested Sub: Conditional description
+      Description: !If 
+        - IsProduction
+        - !Sub "Production processor for ${AWS::StackName}"
+        - "Development processor function"
+      
+      Environment:
+        Variables:
+          # GetAtt: Get bucket attribute
+          BUCKET_NAME: !Ref AppBucket
+          BUCKET_ARN: !GetAtt AppBucket.Arn
+          BUCKET_DOMAIN: !GetAtt AppBucket.DomainName
+          
+          # Sub with multiple variables
+          LOG_PREFIX: !Sub "logs/${Environment}/${AWS::StackName}"
+          
+          # If with complex nesting
+          ENABLE_DEBUG: !If [IsNotProduction, "true", "false"]
+
+  # Auto Scaling Group demonstrating Select and GetAZs
+  WebServerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      # Join with Ref
+      AutoScalingGroupName: !Join ["-", ["web", !Ref Environment, "asg"]]
+      
+      # If with Or condition: Scale based on environment
+      MinSize: !If [IsProdOrStaging, "3", "1"]
+      MaxSize: !If [IsProduction, "10", "3"]
+      DesiredCapacity: !If [IsProdWithBackups, "5", "2"]
+      
+      # GetAZs: Get all availability zones (returns list)
+      AvailabilityZones: !GetAZs ""
+      
+      Tags:
+        - Key: Name
+          # Select: Get first AZ from list
+          Value: !Sub "WebServer-${Environment}-${AWS::Region}"
+          PropagateAtLaunch: true
+
+  # SNS Topic with conditional subscription
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: IsProduction
+    Properties:
+      # Sub with intrinsic in variable
+      TopicName: !Sub 
+        - "alerts-${Env}-${Region}"
+        - Env: !Ref Environment
+          Region: !Ref AWS::Region
+      
+      DisplayName: !If 
+        - IsProduction
+        - "Production Alerts - URGENT"
+        - !Sub "${Environment} Alerts"
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket
+    Value: !Ref AppBucket
+    Export:
+      # Sub in export name
+      Name: !Sub "${AWS::StackName}-BucketName"
+  
+  BucketArn:
+    Description: ARN of the S3 bucket
+    # GetAtt: Get attribute value
+    Value: !GetAtt AppBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketArn"
+  
+  FunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt ProcessorFunction.Arn
+  
+  EnvironmentType:
+    Description: Current environment tier
+    # If with nested Join
+    Value: !If 
+      - IsProduction
+      - !Join ["", ["Production (", !Ref AWS::Region, ")"]]
+      - !Join ["", [!Ref Environment, " environment"]]
+  
+  FirstAvailabilityZone:
+    Description: Primary availability zone
+    # Select: Pick first item from GetAZs list
+    Value: !Select [0, !GetAZs ""]
