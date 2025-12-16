@@ -1378,3 +1378,238 @@ Resources:
 		diagnostics
 	);
 }
+
+#[test]
+fn yaml_equals_intrinsic() {
+	let text = r#"
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "prod"]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	assert_eq!(template.conditions.len(), 1);
+
+	let condition = &template.conditions["IsProduction"];
+	match &condition.expression {
+		CfnValue::Equals { left, right, .. } => {
+			// Left should be !Ref Environment
+			assert!(matches!(**left, CfnValue::Ref { ref target, .. } if target == "Environment"));
+			// Right should be "prod"
+			assert!(matches!(**right, CfnValue::String(ref s, _) if s == "prod"));
+		}
+		other => panic!("expected Equals CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn json_equals_intrinsic() {
+	let text = r#"{
+  "Conditions": {
+    "IsProduction": {
+      "Fn::Equals": [
+        {"Ref": "Environment"},
+        "prod"
+      ]
+    }
+  },
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket"
+    }
+  }
+}"#;
+
+	let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+	assert_eq!(template.conditions.len(), 1);
+
+	let condition = &template.conditions["IsProduction"];
+	match &condition.expression {
+		CfnValue::Equals { left, right, .. } => {
+			assert!(matches!(**left, CfnValue::Ref { ref target, .. } if target == "Environment"));
+			assert!(matches!(**right, CfnValue::String(ref s, _) if s == "prod"));
+		}
+		other => panic!("expected Equals CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_not_intrinsic() {
+	let text = r#"
+Conditions:
+  IsNotProduction: !Not [!Equals [!Ref Environment, "prod"]]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	assert_eq!(template.conditions.len(), 1);
+
+	let condition = &template.conditions["IsNotProduction"];
+	match &condition.expression {
+		CfnValue::Not { condition, .. } => {
+			// Inside should be !Equals
+			assert!(matches!(**condition, CfnValue::Equals { .. }));
+		}
+		other => panic!("expected Not CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_and_intrinsic() {
+	let text = r#"
+Conditions:
+  IsProdAndUSEast: !And
+    - !Equals [!Ref Environment, "prod"]
+    - !Equals [!Ref AWS::Region, "us-east-1"]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	assert_eq!(template.conditions.len(), 1);
+
+	let condition = &template.conditions["IsProdAndUSEast"];
+	match &condition.expression {
+		CfnValue::And { conditions, .. } => {
+			assert_eq!(conditions.len(), 2);
+			// Both should be Equals
+			assert!(matches!(&conditions[0], CfnValue::Equals { .. }));
+			assert!(matches!(&conditions[1], CfnValue::Equals { .. }));
+		}
+		other => panic!("expected And CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_or_intrinsic() {
+	let text = r#"
+Conditions:
+  IsProdOrStaging: !Or
+    - !Equals [!Ref Environment, "prod"]
+    - !Equals [!Ref Environment, "staging"]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	assert_eq!(template.conditions.len(), 1);
+
+	let condition = &template.conditions["IsProdOrStaging"];
+	match &condition.expression {
+		CfnValue::Or { conditions, .. } => {
+			assert_eq!(conditions.len(), 2);
+			assert!(matches!(&conditions[0], CfnValue::Equals { .. }));
+			assert!(matches!(&conditions[1], CfnValue::Equals { .. }));
+		}
+		other => panic!("expected Or CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_and_with_too_few_conditions() {
+	let text = r#"
+Conditions:
+  Invalid: !And [!Equals [!Ref Env, "prod"]]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+	let result = CfnTemplate::from_yaml(text, &test_uri());
+	assert!(result.is_err());
+	let diags = result.unwrap_err();
+	assert!(diags.iter().any(|d| d.message.contains("2-10 conditions")));
+}
+
+#[test]
+fn yaml_condition_intrinsic() {
+	let text = r#"
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "prod"]
+  ShouldCreateBucket: !Condition IsProduction
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	assert_eq!(template.conditions.len(), 2);
+
+	let condition = &template.conditions["ShouldCreateBucket"];
+	match &condition.expression {
+		CfnValue::Condition { condition_name, .. } => {
+			assert_eq!(condition_name, "IsProduction");
+		}
+		other => panic!("expected Condition CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_condition_with_invalid_reference() {
+	let text = r#"
+Conditions:
+  Invalid: !Condition NonExistentCondition
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+"#;
+
+	let uri = test_uri();
+	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+	let spec_store = create_test_spec();
+	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+	assert!(diagnostics.iter().any(|d| {
+		d.code
+			== Some(NumberOrString::String(
+				"WA2_CFN_INVALID_CONDITION_REF".into(),
+			)) && d.message.contains("NonExistentCondition")
+	}));
+}
+
+#[test]
+fn test_condition_with_valid_reference() {
+	let text = r#"
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "prod"]
+  ShouldCreate: !Condition IsProduction
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: enabled
+"#;
+
+	let uri = test_uri();
+	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+	let spec_store = create_test_spec();
+	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+	// Should NOT have any Condition reference errors
+	assert!(
+		!diagnostics.iter().any(|d| {
+			d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_INVALID_CONDITION_REF".into(),
+				))
+		}),
+		"Valid condition reference should not produce errors, got: {:?}",
+		diagnostics
+	);
+}

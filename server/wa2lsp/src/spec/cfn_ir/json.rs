@@ -577,6 +577,105 @@ impl CfnValue {
 								});
 							}
 						}
+						IntrinsicKind::Equals => {
+							// Equals: {"Fn::Equals": [value1, value2]}
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 2
+							{
+								let left = CfnValue::from_json_ast(&arr.elements[0], text)?;
+								let right = CfnValue::from_json_ast(&arr.elements[1], text)?;
+
+								return Ok(CfnValue::Equals {
+									left: Box::new(left),
+									right: Box::new(right),
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::Not => {
+							// Not: {"Fn::Not": [condition]}
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 1
+							{
+								let condition = CfnValue::from_json_ast(&arr.elements[0], text)?;
+
+								return Ok(CfnValue::Not {
+									condition: Box::new(condition),
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::And => {
+							// And: {"Fn::And": [condition1, condition2, ...]}
+							if let Some(arr) = value.as_array() {
+								if arr.elements.len() < 2 || arr.elements.len() > 10 {
+									return Err(vec![Diagnostic {
+										range: inner_range,
+										severity: Some(DiagnosticSeverity::ERROR),
+										code: Some(NumberOrString::String(
+											"WA2_CFN_MALFORMED_AND".into(),
+										)),
+										source: Some("wa2-lsp".into()),
+										message: format!(
+											"Malformed Fn::And: expected 2-10 conditions, got {}",
+											arr.elements.len()
+										),
+										..Default::default()
+									}]);
+								}
+
+								let conditions: Result<Vec<_>, _> = arr
+									.elements
+									.iter()
+									.map(|elem| CfnValue::from_json_ast(elem, text))
+									.collect();
+
+								return Ok(CfnValue::And {
+									conditions: conditions?,
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::Or => {
+							// Or: {"Fn::Or": [condition1, condition2, ...]}
+							if let Some(arr) = value.as_array() {
+								if arr.elements.len() < 2 || arr.elements.len() > 10 {
+									return Err(vec![Diagnostic {
+										range: inner_range,
+										severity: Some(DiagnosticSeverity::ERROR),
+										code: Some(NumberOrString::String(
+											"WA2_CFN_MALFORMED_OR".into(),
+										)),
+										source: Some("wa2-lsp".into()),
+										message: format!(
+											"Malformed Fn::Or: expected 2-10 conditions, got {}",
+											arr.elements.len()
+										),
+										..Default::default()
+									}]);
+								}
+
+								let conditions: Result<Vec<_>, _> = arr
+									.elements
+									.iter()
+									.map(|elem| CfnValue::from_json_ast(elem, text))
+									.collect();
+
+								return Ok(CfnValue::Or {
+									conditions: conditions?,
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::Condition => {
+							// Condition: {"Condition": "ConditionName"}
+							if let Some(s) = value.as_string_lit() {
+								return Ok(CfnValue::Condition {
+									condition_name: s.value.to_string(),
+									range: inner_range,
+								});
+							}
+						}
 					}
 				}
 			}
@@ -656,4 +755,3 @@ fn json_error_to_diagnostic(err: ParseError, uri: &Url) -> Diagnostic {
 		..Default::default()
 	}
 }
-

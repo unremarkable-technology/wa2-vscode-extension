@@ -104,6 +104,36 @@ impl fmt::Display for CfnValue {
 					condition_name, value_if_true, value_if_false
 				)
 			}
+			CfnValue::Equals { left, right, .. } => {
+				write!(f, "!Equals [{}, {}]", left, right)
+			}
+			CfnValue::Not { condition, .. } => {
+				write!(f, "!Not [{}]", condition)
+			}
+			CfnValue::And { conditions, .. } => {
+				write!(f, "!And [")?;
+				for (i, cond) in conditions.iter().enumerate() {
+					if i > 0 {
+						write!(f, ", ")?;
+					}
+					write!(f, "{}", cond)?;
+				}
+				write!(f, "]")
+			}
+
+			CfnValue::Or { conditions, .. } => {
+				write!(f, "!Or [")?;
+				for (i, cond) in conditions.iter().enumerate() {
+					if i > 0 {
+						write!(f, ", ")?;
+					}
+					write!(f, "{}", cond)?;
+				}
+				write!(f, "]")
+			}
+			CfnValue::Condition { condition_name, .. } => {
+				write!(f, "!Condition {}", condition_name)
+			}
 			CfnValue::Array(items, _) => {
 				write!(f, "[")?;
 				for (i, item) in items.iter().enumerate() {

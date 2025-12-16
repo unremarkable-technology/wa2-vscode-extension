@@ -150,6 +150,17 @@ impl CfnTemplate {
 			}
 		}
 
+		// Validate conditions
+		for condition in self.conditions.values() {
+			// Validate the condition expression
+			Self::validate_intrinsics(
+				&condition.expression,
+				&symbols,
+				&mut diagnostics,
+				spec_store,
+			);
+		}
+
 		diagnostics
 	}
 
@@ -564,6 +575,55 @@ impl CfnTemplate {
 				// Recursively validate both branches
 				Self::validate_intrinsics(value_if_true, symbols, diagnostics, spec);
 				Self::validate_intrinsics(value_if_false, symbols, diagnostics, spec);
+			}
+			CfnValue::Equals { left, right, .. } => {
+				// Recursively validate both operands
+				Self::validate_intrinsics(left, symbols, diagnostics, spec);
+				Self::validate_intrinsics(right, symbols, diagnostics, spec);
+			}
+			CfnValue::Not { condition, .. } => {
+				// Recursively validate the condition
+				Self::validate_intrinsics(condition, symbols, diagnostics, spec);
+			}
+			CfnValue::And { conditions, .. } | CfnValue::Or { conditions, .. } => {
+				// Recursively validate all conditions
+				for condition in conditions {
+					Self::validate_intrinsics(condition, symbols, diagnostics, spec);
+				}
+			}
+			CfnValue::Condition {
+				condition_name,
+				range,
+			} => {
+				// Validate that the referenced condition exists
+				if !symbols.has_condition(condition_name) {
+					let candidates = symbols.conditions.keys().map(|s| s.as_str());
+					let suggestion_data =
+						crate::spec::code_utils::names::find_closest(condition_name, candidates);
+
+					let message = if let Some((suggested, _)) = suggestion_data {
+						format!(
+							"!Condition references `{}` which does not exist. Did you mean `{}`?",
+							condition_name, suggested
+						)
+					} else {
+						format!(
+							"!Condition references `{}` which does not exist. Must reference a condition defined in Conditions section.",
+							condition_name
+						)
+					};
+
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_INVALID_CONDITION_REF".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message,
+						..Default::default()
+					});
+				}
 			}
 			CfnValue::Array(items, _) => {
 				for item in items {

@@ -23,6 +23,29 @@ pub struct CfnResource {
 	pub type_range: Range,
 }
 
+/// A CloudFormation parameter declaration
+#[derive(Debug, Clone)]
+pub struct CfnParameter {
+	pub name: String,
+	pub parameter_type: String, // "String", "Number", "List<Number>", etc.
+	pub default_value: Option<CfnValue>,
+	pub description: Option<String>,
+
+	// Position tracking
+	pub name_range: Range,
+	pub type_range: Range,
+}
+
+/// A CloudFormation condition declaration
+#[derive(Debug, Clone)]
+pub struct CfnCondition {
+	pub name: String,
+	pub expression: CfnValue, // The condition expression (e.g., !Equals [...])
+
+	// Position tracking
+	pub name_range: Range,
+}
+
 /// A value in a CloudFormation template with position tracking
 #[derive(Debug, Clone)]
 pub enum CfnValue {
@@ -79,29 +102,40 @@ pub enum CfnValue {
 		value_if_false: Box<CfnValue>,
 		range: Range,
 	},
-}
 
-/// A CloudFormation parameter declaration
-#[derive(Debug, Clone)]
-pub struct CfnParameter {
-	pub name: String,
-	pub parameter_type: String, // "String", "Number", "List<Number>", etc.
-	pub default_value: Option<CfnValue>,
-	pub description: Option<String>,
+	/// !Equals / { "Fn::Equals": [value1, value2] }
+	Equals {
+		left: Box<CfnValue>,
+		right: Box<CfnValue>,
+		range: Range,
+	},
 
-	// Position tracking
-	pub name_range: Range,
-	pub type_range: Range,
-}
+	/// !Not / { "Fn::Not": [condition] }
+	Not {
+		condition: Box<CfnValue>,
+		range: Range,
+	},
 
-/// A CloudFormation condition declaration
-#[derive(Debug, Clone)]
-pub struct CfnCondition {
-	pub name: String,
-	pub expression: CfnValue, // The condition expression (e.g., !Equals [...])
+	/// !And / { "Fn::And": [condition1, condition2, ...] }
+	/// Takes 2-10 conditions
+	And {
+		conditions: Vec<CfnValue>,
+		range: Range,
+	},
 
-	// Position tracking
-	pub name_range: Range,
+	/// !Or / { "Fn::Or": [condition1, condition2, ...] }
+	/// Takes 2-10 conditions
+	Or {
+		conditions: Vec<CfnValue>,
+		range: Range,
+	},
+
+	/// !Condition / { "Condition": "ConditionName" }
+	/// References another condition by name
+	Condition {
+		condition_name: String,
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -121,6 +155,11 @@ impl CfnValue {
 			CfnValue::Join { range, .. } => *range,
 			CfnValue::Select { range, .. } => *range,
 			CfnValue::If { range, .. } => *range,
+			CfnValue::Equals { range, .. } => *range,
+			CfnValue::Not { range, .. } => *range,
+			CfnValue::And { range, .. } => *range,
+			CfnValue::Or { range, .. } => *range,
+			CfnValue::Condition { range, .. } => *range,
 		}
 	}
 

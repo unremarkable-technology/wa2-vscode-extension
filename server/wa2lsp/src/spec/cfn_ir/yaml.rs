@@ -489,13 +489,13 @@ impl CfnValue {
 							}
 
 							return Err(vec![Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: Some(NumberOrString::String("WA2_CFN_MALFORMED_GETATT".into())),
-                source: Some("wa2-lsp".into()),
-                message: "Malformed !GetAtt: expected 'ResourceName.AttributeName' or array [ResourceName, AttributeName]".to_string(),
-                ..Default::default()
-            }]);
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_GETATT".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !GetAtt: expected 'ResourceName.AttributeName' or array [ResourceName, AttributeName]".to_string(),
+								..Default::default()
+							}]);
 						}
 						IntrinsicKind::Sub => {
 							// String form: !Sub "template with ${Var}"
@@ -563,13 +563,13 @@ impl CfnValue {
 									CfnValue::Array(items, _) => items,
 									_ => {
 										return Err(vec![Diagnostic {
-                    range: marked_yaml_to_range(values_node),
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: Some(NumberOrString::String("WA2_CFN_MALFORMED_JOIN".into())),
-                    source: Some("wa2-lsp".into()),
-                    message: "Malformed !Join: second argument must be an array of values".to_string(),
-                    ..Default::default()
-                }]);
+											range: marked_yaml_to_range(values_node),
+											severity: Some(DiagnosticSeverity::ERROR),
+											code: Some(NumberOrString::String("WA2_CFN_MALFORMED_JOIN".into())),
+											source: Some("wa2-lsp".into()),
+											message: "Malformed !Join: second argument must be an array of values".to_string(),
+											..Default::default()
+										}]);
 									}
 								};
 
@@ -636,13 +636,157 @@ impl CfnValue {
 							}
 
 							return Err(vec![Diagnostic {
-        range,
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(NumberOrString::String("WA2_CFN_MALFORMED_IF".into())),
-        source: Some("wa2-lsp".into()),
-        message: "Malformed !If: expected array [condition_name, value_if_true, value_if_false]".to_string(),
-        ..Default::default()
-    }]);
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_IF".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !If: expected array [condition_name, value_if_true, value_if_false]".to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::Equals => {
+							// Equals must be array form: !Equals [value1, value2]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 2
+							{
+								let left = CfnValue::from_marked_yaml(&seq[0])?;
+								let right = CfnValue::from_marked_yaml(&seq[1])?;
+
+								return Ok(CfnValue::Equals {
+									left: Box::new(left),
+									right: Box::new(right),
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_MALFORMED_EQUALS".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Equals: expected array [value1, value2]"
+									.to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::Not => {
+							// Not must be array form with single element: !Not [condition]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 1
+							{
+								let condition = CfnValue::from_marked_yaml(&seq[0])?;
+
+								return Ok(CfnValue::Not {
+									condition: Box::new(condition),
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_NOT".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Not: expected array with single condition [condition]".to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::And => {
+							// And must be array form with 2-10 conditions: !And [cond1, cond2, ...]
+							if let YamlData::Sequence(seq) = &inner.data {
+								if seq.len() < 2 || seq.len() > 10 {
+									return Err(vec![Diagnostic {
+										range,
+										severity: Some(DiagnosticSeverity::ERROR),
+										code: Some(NumberOrString::String(
+											"WA2_CFN_MALFORMED_AND".into(),
+										)),
+										source: Some("wa2-lsp".into()),
+										message: format!(
+											"Malformed !And: expected 2-10 conditions, got {}",
+											seq.len()
+										),
+										..Default::default()
+									}]);
+								}
+
+								let conditions: Result<Vec<_>, _> =
+									seq.iter().map(CfnValue::from_marked_yaml).collect();
+
+								return Ok(CfnValue::And {
+									conditions: conditions?,
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_AND".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !And: expected array of conditions".to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::Or => {
+							// Or must be array form with 2-10 conditions: !Or [cond1, cond2, ...]
+							if let YamlData::Sequence(seq) = &inner.data {
+								if seq.len() < 2 || seq.len() > 10 {
+									return Err(vec![Diagnostic {
+										range,
+										severity: Some(DiagnosticSeverity::ERROR),
+										code: Some(NumberOrString::String(
+											"WA2_CFN_MALFORMED_OR".into(),
+										)),
+										source: Some("wa2-lsp".into()),
+										message: format!(
+											"Malformed !Or: expected 2-10 conditions, got {}",
+											seq.len()
+										),
+										..Default::default()
+									}]);
+								}
+
+								let conditions: Result<Vec<_>, _> =
+									seq.iter().map(CfnValue::from_marked_yaml).collect();
+
+								return Ok(CfnValue::Or {
+									conditions: conditions?,
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_OR".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Or: expected array of conditions".to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::Condition => {
+							// Condition takes a string: !Condition ConditionName
+							if let YamlData::Value(Scalar::String(condition_name)) = &inner.data {
+								return Ok(CfnValue::Condition {
+									condition_name: condition_name.to_string(),
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_MALFORMED_CONDITION".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Condition: expected condition name string"
+									.to_string(),
+								..Default::default()
+							}]);
 						}
 					}
 				}
@@ -755,7 +899,6 @@ impl CfnValue {
 		})
 	}
 }
-
 
 /// Convert a MarkedYaml node to an LSP Range
 fn marked_yaml_to_range(node: &MarkedYaml) -> Range {

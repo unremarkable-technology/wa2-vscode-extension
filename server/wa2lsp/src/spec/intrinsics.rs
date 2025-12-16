@@ -10,6 +10,11 @@ pub enum IntrinsicKind {
 	Join,
 	Select,
 	If,
+	Equals,
+	Not,
+	And,
+	Or,
+	Condition,
 }
 
 /// Definition of an intrinsic function
@@ -56,6 +61,31 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::If,
 		yaml_tag: "If",
 		json_key: "Fn::If",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Equals,
+		yaml_tag: "Equals",
+		json_key: "Fn::Equals",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Not,
+		yaml_tag: "Not",
+		json_key: "Fn::Not",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::And,
+		yaml_tag: "And",
+		json_key: "Fn::And",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Or,
+		yaml_tag: "Or",
+		json_key: "Fn::Or",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Condition,
+		yaml_tag: "Condition",
+		json_key: "Condition",
 	},
 ];
 

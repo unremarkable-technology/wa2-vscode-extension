@@ -130,6 +130,31 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 				}),
 			}
 		}
+
+		CfnValue::Equals { .. } => {
+			// Equals returns a condition (boolean), but CloudFormation doesn't have
+			// a Boolean property type. These are only used in Conditions and !If.
+			// Return None since they don't produce usable property values.
+			None
+		}
+
+		CfnValue::Not { .. } => {
+			// Not returns a condition (boolean)
+			// Return None since they don't produce usable property values
+			None
+		}
+
+		CfnValue::And { .. } | CfnValue::Or { .. } => {
+			// And/Or return conditions (boolean)
+			// Return None since they don't produce usable property values
+			None
+		}
+
+		CfnValue::Condition { .. } => {
+			// Condition returns a condition (boolean)
+			// Return None since they don't produce usable property values
+			None
+		}
 	}
 }
 
