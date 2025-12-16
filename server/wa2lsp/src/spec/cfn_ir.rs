@@ -15,6 +15,7 @@ use tower_lsp::lsp_types::Range;
 pub struct CfnTemplate {
 	pub resources: HashMap<String, CfnResource>,
 	pub parameters: HashMap<String, CfnParameter>,
+	pub conditions: HashMap<String, CfnCondition>,
 }
 
 /// A CloudFormation resource with position tracking
@@ -77,9 +78,15 @@ pub enum CfnValue {
 		list: Box<CfnValue>,  // Usually array or !GetAZs
 		range: Range,
 	},
-}
 
-// Add to cfn_ir.rs after CfnResource struct
+	/// !If / { "Fn::If": [condition_name, value_if_true, value_if_false] }
+	If {
+		condition_name: String,
+		value_if_true: Box<CfnValue>,
+		value_if_false: Box<CfnValue>,
+		range: Range,
+	},
+}
 
 /// A CloudFormation parameter declaration
 #[derive(Debug, Clone)]
@@ -92,6 +99,16 @@ pub struct CfnParameter {
 	// Position tracking
 	pub name_range: Range,
 	pub type_range: Range,
+}
+
+/// A CloudFormation condition declaration
+#[derive(Debug, Clone)]
+pub struct CfnCondition {
+	pub name: String,
+	pub expression: CfnValue, // The condition expression (e.g., !Equals [...])
+
+	// Position tracking
+	pub name_range: Range,
 }
 
 impl CfnValue {
@@ -110,6 +127,7 @@ impl CfnValue {
 			CfnValue::GetAZs { range, .. } => *range,
 			CfnValue::Join { range, .. } => *range,
 			CfnValue::Select { range, .. } => *range,
+			CfnValue::If { range, .. } => *range,
 		}
 	}
 
@@ -141,7 +159,7 @@ impl CfnValue {
 use saphyr::{LoadableYamlNode, MarkedYaml, ScanError};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Url};
 
-// In cfn_ir.rs, create a helper to build diagnostics with suggestions
+// In helper to build diagnostics with suggestions
 fn create_diagnostic_with_suggestion(
 	range: Range,
 	severity: DiagnosticSeverity,
@@ -179,6 +197,7 @@ impl CfnTemplate {
 			return Ok(CfnTemplate {
 				resources: HashMap::new(),
 				parameters: HashMap::new(),
+				conditions: HashMap::new(),
 			});
 		}
 
@@ -188,6 +207,7 @@ impl CfnTemplate {
 	fn from_marked_yaml(root: &MarkedYaml, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
 		let mut resources = HashMap::new();
 		let mut parameters = HashMap::new();
+		let mut conditions = HashMap::new();
 
 		let root_map = match root.data.as_mapping() {
 			Some(m) => m,
@@ -263,6 +283,66 @@ impl CfnTemplate {
 			}
 		}
 
+		// Parse Conditions section
+		let conditions_node = root_map
+			.iter()
+			.find(|(k, _)| k.data.as_str() == Some("Conditions"))
+			.map(|(_, v)| v);
+
+		if let Some(conditions_node) = conditions_node {
+			let conditions_map = match conditions_node.data.as_mapping() {
+				Some(m) => m,
+				None => {
+					return Err(vec![Diagnostic {
+						range: marked_yaml_to_range(conditions_node),
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_CONDITIONS".into())),
+						source: Some("wa2-lsp".into()),
+						message: "Template Conditions section must be a mapping".to_string(),
+						..Default::default()
+					}]);
+				}
+			};
+
+			let mut errors = Vec::new();
+			for (condition_key, condition_node) in conditions_map {
+				let condition_name = match condition_key.data.as_str() {
+					Some(s) => s.to_string(),
+					None => {
+						errors.push(Diagnostic {
+							range: marked_yaml_to_range(condition_key),
+							severity: Some(DiagnosticSeverity::WARNING),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_CONDITION_KEY_NOT_STRING".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message: "Template: condition key is not a string".to_string(),
+							..Default::default()
+						});
+						continue;
+					}
+				};
+
+				match CfnCondition::from_marked_yaml(
+					condition_name.clone(),
+					condition_node,
+					marked_yaml_to_range(condition_key),
+					uri,
+				) {
+					Ok(condition) => {
+						conditions.insert(condition_name, condition);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
+			}
+
+			if !errors.is_empty() {
+				return Err(errors);
+			}
+		}
+
 		// Parse Resources section
 		let resources_node = root_map
 			.iter()
@@ -274,7 +354,8 @@ impl CfnTemplate {
 			None => {
 				return Ok(CfnTemplate {
 					resources: HashMap::new(),
-					parameters, // Include parsed parameters
+					parameters,
+					conditions,
 				});
 			}
 		};
@@ -337,6 +418,44 @@ impl CfnTemplate {
 		Ok(CfnTemplate {
 			resources,
 			parameters,
+			conditions,
+		})
+	}
+}
+
+impl CfnCondition {
+	fn from_marked_yaml(
+		name: String,
+		node: &MarkedYaml,
+		name_range: Range,
+		_uri: &Url,
+	) -> Result<Self, Vec<Diagnostic>> {
+		// A condition is just a value expression (usually an intrinsic function)
+		let expression = CfnValue::from_marked_yaml(node)?;
+
+		Ok(CfnCondition {
+			name,
+			expression,
+			name_range,
+		})
+	}
+}
+
+impl CfnCondition {
+	fn from_json_ast(
+		name: String,
+		node: &Value,
+		name_range: Range,
+		text: &str,
+		_uri: &Url,
+	) -> Result<Self, Vec<Diagnostic>> {
+		// A condition is just a value expression
+		let expression = CfnValue::from_json_ast(node, text)?;
+
+		Ok(CfnCondition {
+			name,
+			expression,
+			name_range,
 		})
 	}
 }
@@ -624,6 +743,33 @@ impl CfnValue {
 									.to_string(),
 								..Default::default()
 							}]);
+						}
+						IntrinsicKind::If => {
+							// If must be array form: !If [condition_name, value_if_true, value_if_false]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 3 && let YamlData::Value(Scalar::String(
+								condition_name,
+							)) = &seq[0].data
+							{
+								let value_if_true = CfnValue::from_marked_yaml(&seq[1])?;
+								let value_if_false = CfnValue::from_marked_yaml(&seq[2])?;
+
+								return Ok(CfnValue::If {
+									condition_name: condition_name.to_string(),
+									value_if_true: Box::new(value_if_true),
+									value_if_false: Box::new(value_if_false),
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("WA2_CFN_MALFORMED_IF".into())),
+        source: Some("wa2-lsp".into()),
+        message: "Malformed !If: expected array [condition_name, value_if_true, value_if_false]".to_string(),
+        ..Default::default()
+    }]);
 						}
 					}
 				}
@@ -1119,7 +1265,7 @@ impl CfnTemplate {
 		value: &CfnValue,
 		symbols: &SymbolTable,
 		diagnostics: &mut Vec<Diagnostic>,
-		spec: &SpecStore, // NEW parameter
+		spec: &SpecStore,
 	) {
 		match value {
 			CfnValue::Ref { target, range } => {
@@ -1347,6 +1493,46 @@ impl CfnTemplate {
 				Self::validate_intrinsics(index, symbols, diagnostics, spec);
 				Self::validate_intrinsics(list, symbols, diagnostics, spec);
 			}
+			CfnValue::If {
+				condition_name,
+				value_if_true,
+				value_if_false,
+				range,
+			} => {
+				// Check if the condition exists
+				if !symbols.has_condition(condition_name) {
+					let candidates = symbols.conditions.keys().map(|s| s.as_str());
+					let suggestion_data =
+						crate::spec::code_utils::names::find_closest(condition_name, candidates);
+
+					let message = if let Some((suggested, _)) = suggestion_data {
+						format!(
+							"!If condition `{}` does not exist. Did you mean `{}`?",
+							condition_name, suggested
+						)
+					} else {
+						format!(
+							"!If condition `{}` does not exist. Must reference a condition defined in Conditions section.",
+							condition_name
+						)
+					};
+
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_INVALID_IF_CONDITION".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message,
+						..Default::default()
+					});
+				}
+
+				// Recursively validate both branches
+				Self::validate_intrinsics(value_if_true, symbols, diagnostics, spec);
+				Self::validate_intrinsics(value_if_false, symbols, diagnostics, spec);
+			}
 			CfnValue::Array(items, _) => {
 				for item in items {
 					Self::validate_intrinsics(item, symbols, diagnostics, spec); // Pass spec
@@ -1411,6 +1597,7 @@ impl CfnTemplate {
 	fn from_json_ast(root: &Value, text: &str, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
 		let mut resources = HashMap::new();
 		let mut parameters = HashMap::new();
+		let mut conditions = HashMap::new();
 
 		let root_obj = match root.as_object() {
 			Some(obj) => obj,
@@ -1469,6 +1656,49 @@ impl CfnTemplate {
 			}
 		}
 
+		// Parse Conditions section
+		if let Some(conditions_prop) = root_obj.get("Conditions") {
+			let conditions_obj = match conditions_prop.value.as_object() {
+				Some(obj) => obj,
+				None => {
+					return Err(vec![Diagnostic {
+						range: ranged_to_range(&conditions_prop.value, text),
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_CONDITIONS".into())),
+						source: Some("wa2-lsp".into()),
+						message: "Template Conditions section must be an object".to_string(),
+						..Default::default()
+					}]);
+				}
+			};
+
+			let mut errors = Vec::new();
+			for prop in conditions_obj.properties.iter() {
+				let condition_name = prop.name.clone().into_string();
+				let name_range = ranged_to_range(&prop.name, text);
+				let condition_value = prop.value.clone();
+
+				match CfnCondition::from_json_ast(
+					condition_name.clone(),
+					&condition_value,
+					name_range,
+					text,
+					uri,
+				) {
+					Ok(condition) => {
+						conditions.insert(condition_name, condition);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
+			}
+
+			if !errors.is_empty() {
+				return Err(errors);
+			}
+		}
+
 		// Find Resources section
 		let resources_value = root_obj.get("Resources").map(|prop| prop.value.clone());
 		let resources_value = match resources_value {
@@ -1478,6 +1708,7 @@ impl CfnTemplate {
 				return Ok(CfnTemplate {
 					resources: HashMap::new(),
 					parameters: HashMap::new(),
+					conditions: HashMap::new(),
 				});
 			}
 		};
@@ -1526,6 +1757,7 @@ impl CfnTemplate {
 		Ok(CfnTemplate {
 			resources,
 			parameters,
+			conditions,
 		})
 	}
 }
@@ -1792,6 +2024,25 @@ impl CfnValue {
 								});
 							}
 						}
+						IntrinsicKind::If => {
+							// If: {"Fn::If": [condition_name, value_if_true, value_if_false]}
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 3
+								&& let Some(condition_name) = arr.elements[0].as_string_lit()
+							{
+								let value_if_true =
+									CfnValue::from_json_ast(&arr.elements[1], text)?;
+								let value_if_false =
+									CfnValue::from_json_ast(&arr.elements[2], text)?;
+
+								return Ok(CfnValue::If {
+									condition_name: condition_name.value.to_string(),
+									value_if_true: Box::new(value_if_true),
+									value_if_false: Box::new(value_if_false),
+									range: inner_range,
+								});
+							}
+						}
 					}
 				}
 			}
@@ -1995,7 +2246,6 @@ impl fmt::Display for CfnValue {
 			} => {
 				write!(f, "!GetAtt {}.{}", target, attribute)
 			}
-			// In Display for CfnValue:
 			CfnValue::Sub {
 				template,
 				variables,
@@ -2024,6 +2274,18 @@ impl fmt::Display for CfnValue {
 			}
 			CfnValue::Select { index, list, .. } => {
 				write!(f, "!Select [{}, {}]", index, list)
+			}
+			CfnValue::If {
+				condition_name,
+				value_if_true,
+				value_if_false,
+				..
+			} => {
+				write!(
+					f,
+					"!If [{}, {}, {}]",
+					condition_name, value_if_true, value_if_false
+				)
 			}
 			CfnValue::Array(items, _) => {
 				write!(f, "[")?;
@@ -2261,7 +2523,6 @@ Parameters:
 		ResourceTypeId, ShapeKind, SpecStore, TypeInfo,
 	};
 
-	// In cfn_ir.rs, update create_test_spec()
 	fn create_test_spec() -> SpecStore {
 		let mut resource_types = std::collections::HashMap::new();
 
@@ -3339,5 +3600,117 @@ Resources:
 					"WA2_CFN_INVALID_SELECT_INDEX".into(),
 				))
 		}));
+	}
+
+	#[test]
+	fn yaml_parses_conditions_section() {
+		let text = r#"
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "prod"]
+  IsDevelopment: !Equals [!Ref Environment, "dev"]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+
+		assert_eq!(template.conditions.len(), 2);
+		assert!(template.conditions.contains_key("IsProduction"));
+		assert!(template.conditions.contains_key("IsDevelopment"));
+	}
+
+	#[test]
+	fn yaml_if_intrinsic() {
+		let text = r#"
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "prod"]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [IsProduction, "prod-bucket", "dev-bucket"]
+      BucketEncryption: enabled
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let bucket = &template.resources["MyBucket"];
+		let bucket_name = bucket.properties.get("BucketName").unwrap();
+
+		match bucket_name {
+			CfnValue::If {
+				condition_name,
+				value_if_true,
+				value_if_false,
+				..
+			} => {
+				assert_eq!(condition_name, "IsProduction");
+				assert!(
+					matches!(**value_if_true, CfnValue::String(ref s, _) if s == "prod-bucket")
+				);
+				assert!(
+					matches!(**value_if_false, CfnValue::String(ref s, _) if s == "dev-bucket")
+				);
+			}
+			other => panic!("expected If CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_if_with_invalid_condition() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [NonExistentCondition, "prod", "dev"]
+      BucketEncryption: enabled
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec();
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(diagnostics.iter().any(|d| {
+			d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_INVALID_IF_CONDITION".into(),
+				)) && d.message.contains("NonExistentCondition")
+		}));
+	}
+
+	#[test]
+	fn test_if_with_valid_condition() {
+		let text = r#"
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "prod"]
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [IsProduction, "prod-bucket", "dev-bucket"]
+      BucketEncryption: enabled
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec();
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		// Should NOT have any If condition errors
+		assert!(
+			!diagnostics.iter().any(|d| {
+				d.code
+					== Some(NumberOrString::String(
+						"WA2_CFN_INVALID_IF_CONDITION".into(),
+					))
+			}),
+			"Valid condition should not produce errors, got: {:?}",
+			diagnostics
+		);
 	}
 }

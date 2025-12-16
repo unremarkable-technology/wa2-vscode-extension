@@ -108,6 +108,28 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 				})
 			}
 		}
+
+		CfnValue::If {
+			value_if_true,
+			value_if_false,
+			..
+		} => {
+			// If returns the union of both branch types
+			// For simplicity, if both branches have the same type, return that type
+			// Otherwise return Any
+			let true_type = resolve_type(value_if_true, symbols, spec);
+			let false_type = resolve_type(value_if_false, symbols, spec);
+
+			match (true_type, false_type) {
+				(Some(t1), Some(t2)) if t1.kind == t2.kind && t1.collection == t2.collection => {
+					Some(t1)
+				}
+				_ => Some(TypeInfo {
+					kind: ShapeKind::Any,
+					collection: CollectionKind::Scalar,
+				}),
+			}
+		}
 	}
 }
 
@@ -242,6 +264,7 @@ mod tests {
 		let symbols = SymbolTable {
 			resources: Default::default(),
 			parameters: Default::default(),
+			conditions: Default::default(),
 			pseudo_parameters: Default::default(),
 		};
 

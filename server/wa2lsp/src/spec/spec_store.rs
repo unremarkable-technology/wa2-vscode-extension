@@ -198,7 +198,7 @@ pub struct TypeInfo {
 	pub collection: CollectionKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ShapeKind {
 	Primitive(PrimitiveType),
 	Complex(PropertyTypeId),

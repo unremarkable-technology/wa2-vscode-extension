@@ -9,6 +9,7 @@ pub enum IntrinsicKind {
 	GetAZs,
 	Join,
 	Select,
+	If,
 }
 
 /// Definition of an intrinsic function
@@ -50,6 +51,11 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::Select,
 		yaml_tag: "Select",
 		json_key: "Fn::Select",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::If,
+		yaml_tag: "If",
+		json_key: "Fn::If",
 	},
 ];
 
