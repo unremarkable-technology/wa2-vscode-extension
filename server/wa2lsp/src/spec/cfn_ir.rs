@@ -1,6 +1,9 @@
 use crate::spec::code_utils::names;
 use crate::spec::intrinsics::IntrinsicKind;
-use crate::spec::spec_store::{AttributeName, PropertyName, ResourceTypeId, SpecStore, TypeInfo};
+use crate::spec::spec_store::{
+	AttributeName, CollectionKind, PrimitiveType, PropertyName, ResourceTypeId, ShapeKind,
+	SpecStore, TypeInfo,
+};
 use crate::spec::symbol_table::SymbolTable;
 use crate::spec::{intrinsics, type_resolver};
 use std::collections::HashMap;
@@ -54,6 +57,26 @@ pub enum CfnValue {
 		variables: Option<HashMap<String, CfnValue>>, // For long form with explicit variables
 		range: Range,
 	},
+
+	/// !GetAZs / { "Fn::GetAZs": "region" }
+	GetAZs {
+		region: Box<CfnValue>, // Usually empty string "" or !Ref AWS::Region
+		range: Range,
+	},
+
+	/// !Join / { "Fn::Join": [delimiter, [values]] }
+	Join {
+		delimiter: String,
+		values: Vec<CfnValue>,
+		range: Range,
+	},
+
+	/// !Select / { "Fn::Select": [index, list] }
+	Select {
+		index: Box<CfnValue>, // Usually a number or !Ref to parameter
+		list: Box<CfnValue>,  // Usually array or !GetAZs
+		range: Range,
+	},
 }
 
 // Add to cfn_ir.rs after CfnResource struct
@@ -84,6 +107,9 @@ impl CfnValue {
 			CfnValue::Ref { range, .. } => *range,
 			CfnValue::GetAtt { range, .. } => *range,
 			CfnValue::Sub { range, .. } => *range,
+			CfnValue::GetAZs { range, .. } => *range,
+			CfnValue::Join { range, .. } => *range,
+			CfnValue::Select { range, .. } => *range,
 		}
 	}
 
@@ -520,6 +546,82 @@ impl CfnValue {
 								message:
 									"Malformed !Sub: expected string or array [template, variables]"
 										.to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::GetAZs => {
+							// GetAZs accepts either empty string "" or a region reference
+							let region_value = CfnValue::from_marked_yaml(inner)?;
+							return Ok(CfnValue::GetAZs {
+								region: Box::new(region_value),
+								range,
+							});
+						}
+						IntrinsicKind::Join => {
+							// Join must be array form: !Join [delimiter, [values]]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 2 && let YamlData::Value(Scalar::String(delimiter)) =
+								&seq[0].data
+							{
+								// Second element should be an array of values
+								let values_node = &seq[1];
+								let values_cfn = CfnValue::from_marked_yaml(values_node)?;
+
+								let values = match values_cfn {
+									CfnValue::Array(items, _) => items,
+									_ => {
+										return Err(vec![Diagnostic {
+                    range: marked_yaml_to_range(values_node),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String("WA2_CFN_MALFORMED_JOIN".into())),
+                    source: Some("wa2-lsp".into()),
+                    message: "Malformed !Join: second argument must be an array of values".to_string(),
+                    ..Default::default()
+                }]);
+									}
+								};
+
+								return Ok(CfnValue::Join {
+									delimiter: delimiter.to_string(),
+									values,
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String("WA2_CFN_MALFORMED_JOIN".into())),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Join: expected array [delimiter, [values]]"
+									.to_string(),
+								..Default::default()
+							}]);
+						}
+						IntrinsicKind::Select => {
+							// Select must be array form: !Select [index, list]
+							if let YamlData::Sequence(seq) = &inner.data
+								&& seq.len() == 2
+							{
+								let index_value = CfnValue::from_marked_yaml(&seq[0])?;
+								let list_value = CfnValue::from_marked_yaml(&seq[1])?;
+
+								return Ok(CfnValue::Select {
+									index: Box::new(index_value),
+									list: Box::new(list_value),
+									range,
+								});
+							}
+
+							return Err(vec![Diagnostic {
+								range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_MALFORMED_SELECT".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message: "Malformed !Select: expected array [index, list]"
+									.to_string(),
 								..Default::default()
 							}]);
 						}
@@ -1142,10 +1244,10 @@ impl CfnTemplate {
 
 				for var_ref in var_refs {
 					// Check if variable exists in explicit variables map
-					if let Some(vars) = variables {
-						if vars.contains_key(&var_ref) {
-							continue; // Found in explicit variables
-						}
+					if let Some(vars) = variables
+						&& vars.contains_key(&var_ref)
+					{
+						continue; // Found in explicit variables
 					}
 
 					// Check if it's a valid Ref target (resource/parameter/pseudo-param)
@@ -1191,6 +1293,59 @@ impl CfnTemplate {
 						Self::validate_intrinsics(val, symbols, diagnostics, spec);
 					}
 				}
+			}
+			CfnValue::GetAZs { region, .. } => {
+				// Recursively validate the region value
+				Self::validate_intrinsics(region, symbols, diagnostics, spec);
+			}
+			CfnValue::Join { values, .. } => {
+				// Recursively validate all values in the array
+				for value in values {
+					Self::validate_intrinsics(value, symbols, diagnostics, spec);
+				}
+			}
+			CfnValue::Select { index, list, range } => {
+				// Validate index (should be a number or resolve to a number)
+				if let Some(index_type) = type_resolver::resolve_type(index, symbols, spec) {
+					// Check if index is numeric
+					let is_numeric = matches!(
+						index_type.kind,
+						ShapeKind::Primitive(PrimitiveType::Integer)
+							| ShapeKind::Primitive(PrimitiveType::Long)
+							| ShapeKind::Primitive(PrimitiveType::Double)
+					);
+
+					if !is_numeric {
+						diagnostics.push(Diagnostic {
+							range: *range,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_INVALID_SELECT_INDEX".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message: "!Select index must be a number".to_string(),
+							..Default::default()
+						});
+					}
+				}
+
+				// Validate list (should be a list or resolve to a list)
+				if let Some(list_type) = type_resolver::resolve_type(list, symbols, spec)
+					&& list_type.collection != CollectionKind::List
+				{
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_SELECT_LIST".into())),
+						source: Some("wa2-lsp".into()),
+						message: "!Select second argument must be a list".to_string(),
+						..Default::default()
+					});
+				}
+
+				// Recursively validate index and list
+				Self::validate_intrinsics(index, symbols, diagnostics, spec);
+				Self::validate_intrinsics(list, symbols, diagnostics, spec);
 			}
 			CfnValue::Array(items, _) => {
 				for item in items {
@@ -1585,6 +1740,58 @@ impl CfnValue {
 								});
 							}
 						}
+						IntrinsicKind::GetAZs => {
+							let region_value = CfnValue::from_json_ast(value, text)?;
+							return Ok(CfnValue::GetAZs {
+								region: Box::new(region_value),
+								range: inner_range,
+							});
+						}
+						IntrinsicKind::Join => {
+							// Join: {"Fn::Join": [delimiter, [values]]}
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 2
+								&& let Some(delimiter) = arr.elements[0].as_string_lit()
+							{
+								let values_node = &arr.elements[1];
+								let values_cfn = CfnValue::from_json_ast(values_node, text)?;
+
+								let values = match values_cfn {
+									CfnValue::Array(items, _) => items,
+									_ => {
+										return Err(vec![Diagnostic {
+                    range: json_ast_to_range(values_node, text),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String("WA2_CFN_MALFORMED_JOIN".into())),
+                    source: Some("wa2-lsp".into()),
+                    message: "Malformed Fn::Join: second argument must be an array of values".to_string(),
+                    ..Default::default()
+                }]);
+									}
+								};
+
+								return Ok(CfnValue::Join {
+									delimiter: delimiter.value.to_string(),
+									values,
+									range: inner_range,
+								});
+							}
+						}
+						IntrinsicKind::Select => {
+							// Select: {"Fn::Select": [index, list]}
+							if let Some(arr) = value.as_array()
+								&& arr.elements.len() == 2
+							{
+								let index_value = CfnValue::from_json_ast(&arr.elements[0], text)?;
+								let list_value = CfnValue::from_json_ast(&arr.elements[1], text)?;
+
+								return Ok(CfnValue::Select {
+									index: Box::new(index_value),
+									list: Box::new(list_value),
+									range: inner_range,
+								});
+							}
+						}
 					}
 				}
 			}
@@ -1799,6 +2006,24 @@ impl fmt::Display for CfnValue {
 				} else {
 					write!(f, "!Sub \"{}\"", template)
 				}
+			}
+			CfnValue::GetAZs { region, .. } => {
+				write!(f, "!GetAZs {}", region)
+			}
+			CfnValue::Join {
+				delimiter, values, ..
+			} => {
+				write!(f, "!Join [\"{}\", [", delimiter)?;
+				for (i, v) in values.iter().enumerate() {
+					if i > 0 {
+						write!(f, ", ")?;
+					}
+					write!(f, "{}", v)?;
+				}
+				write!(f, "]]")
+			}
+			CfnValue::Select { index, list, .. } => {
+				write!(f, "!Select [{}, {}]", index, list)
 			}
 			CfnValue::Array(items, _) => {
 				write!(f, "[")?;
@@ -2976,6 +3201,143 @@ Resources:
 				== Some(NumberOrString::String(
 					"WA2_CFN_INVALID_SUB_VARIABLE".into(),
 				)) && d.message.contains("NonExistent")
+		}));
+	}
+
+	#[test]
+	fn yaml_getazs() {
+		let text = r#"
+Resources:
+  MyAutoScaling:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: !GetAZs
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let resource = &template.resources["MyAutoScaling"];
+		let azs = resource.properties.get("AvailabilityZones").unwrap();
+
+		match azs {
+			CfnValue::GetAZs { region, .. } => {
+				assert!(matches!(**region, CfnValue::String(ref s, _) if s.is_empty()));
+			}
+			other => panic!("expected GetAZs CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn yaml_join() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", ["dev", !Ref AWS::Region, "bucket"]]
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let bucket = &template.resources["MyBucket"];
+		let bucket_name = bucket.properties.get("BucketName").unwrap();
+
+		match bucket_name {
+			CfnValue::Join {
+				delimiter, values, ..
+			} => {
+				assert_eq!(delimiter, "-");
+				assert_eq!(values.len(), 3);
+
+				// Check first value is "dev"
+				assert!(matches!(&values[0], CfnValue::String(s, _) if s == "dev"));
+
+				// Check second value is !Ref AWS::Region
+				assert!(
+					matches!(&values[1], CfnValue::Ref { target, .. } if target == "AWS::Region")
+				);
+
+				// Check third value is "bucket"
+				assert!(matches!(&values[2], CfnValue::String(s, _) if s == "bucket"));
+			}
+			other => panic!("expected Join CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn yaml_select() {
+		let text = r#"
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+"#;
+
+		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+		let instance = &template.resources["MyInstance"];
+		let az = instance.properties.get("AvailabilityZone").unwrap();
+
+		match az {
+			CfnValue::Select { index, list, .. } => {
+				// Check index is 0
+				assert!(matches!(**index, CfnValue::Number(n, _) if n == 0.0));
+
+				// Check list is !GetAZs ""
+				assert!(matches!(**list, CfnValue::GetAZs { .. }));
+			}
+			other => panic!("expected Select CfnValue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn test_select_with_valid_numeric_index() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Select [0, !GetAZs ""]
+      BucketEncryption: enabled
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec();
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		// Should NOT have any Select index errors
+		assert!(
+			!diagnostics.iter().any(|d| {
+				d.code
+					== Some(NumberOrString::String(
+						"WA2_CFN_INVALID_SELECT_INDEX".into(),
+					))
+			}),
+			"Valid numeric index should not produce errors, got: {:?}",
+			diagnostics
+		);
+	}
+
+	#[test]
+	fn test_select_with_non_numeric_index() {
+		let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Select ["invalid", !GetAZs ""]
+      BucketEncryption: enabled
+"#;
+
+		let uri = test_uri();
+		let template = CfnTemplate::from_yaml(text, &uri).unwrap();
+		let spec_store = create_test_spec();
+		let diagnostics = template.validate_against_spec(&spec_store, &uri);
+
+		assert!(diagnostics.iter().any(|d| {
+			d.code
+				== Some(NumberOrString::String(
+					"WA2_CFN_INVALID_SELECT_INDEX".into(),
+				))
 		}));
 	}
 }

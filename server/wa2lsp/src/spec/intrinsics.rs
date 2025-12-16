@@ -6,6 +6,9 @@ pub enum IntrinsicKind {
 	Ref,
 	GetAtt,
 	Sub,
+	GetAZs,
+	Join,
+	Select,
 }
 
 /// Definition of an intrinsic function
@@ -32,6 +35,21 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::Sub,
 		yaml_tag: "Sub",
 		json_key: "Fn::Sub",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::GetAZs,
+		yaml_tag: "GetAZs",
+		json_key: "Fn::GetAZs",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Join,
+		yaml_tag: "Join",
+		json_key: "Fn::Join",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Select,
+		yaml_tag: "Select",
+		json_key: "Fn::Select",
 	},
 ];
 

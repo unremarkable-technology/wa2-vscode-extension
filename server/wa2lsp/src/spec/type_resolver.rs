@@ -63,6 +63,51 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 				collection: CollectionKind::Scalar,
 			})
 		}
+
+		CfnValue::GetAZs { .. } => {
+			// GetAZs always returns List<String>
+			Some(TypeInfo {
+				kind: ShapeKind::Primitive(PrimitiveType::String),
+				collection: CollectionKind::List,
+			})
+		}
+
+		CfnValue::Join { .. } => {
+			// Join always returns String
+			Some(TypeInfo {
+				kind: ShapeKind::Primitive(PrimitiveType::String),
+				collection: CollectionKind::Scalar,
+			})
+		}
+
+		CfnValue::Select { list, .. } => {
+			// Select returns the element type of the list
+			// If we can resolve the list type, extract the element type
+			if let Some(list_type) = resolve_type(list, symbols, spec) {
+				match list_type.collection {
+					CollectionKind::List => {
+						// Return the element type as scalar
+						Some(TypeInfo {
+							kind: list_type.kind,
+							collection: CollectionKind::Scalar,
+						})
+					}
+					_ => {
+						// List is not actually a list - return Any
+						Some(TypeInfo {
+							kind: ShapeKind::Any,
+							collection: CollectionKind::Scalar,
+						})
+					}
+				}
+			} else {
+				// Can't determine list type - return Any
+				Some(TypeInfo {
+					kind: ShapeKind::Any,
+					collection: CollectionKind::Scalar,
+				})
+			}
+		}
 	}
 }
 
