@@ -1,89 +1,134 @@
-
 # WA2 VS Code Extension (Early Preview)
 
-The **WA2 VS Code extension** provides **fast, workspace-aware validation**
-for CloudFormation templates inside VS Code, the vision being **an ultra-fast architecture guide inside your IDE**.
+The **WA2 VS Code extension** provides **fast, workspace-aware validation** for CloudFormation templates inside VS Code. The vision is **an ultra-fast architecture guide inside your IDE** that validates not just syntax and semantics, but your **architectural intent**.
 
-This is an **early open-source prototype** focused on Phase 1 of the WA2
-project: a high-performance language server (LSP) that can analyse CloudFormation
-YAML/JSON and deliver near-instant diagnostics. Rust is used for the language server to give low-latency validation even on very large CloudFormation workspaces - we intend to use
-time-budgets to ensure fast response, with any heavy work done only on idle.
+This is an **early open-source prototype** focused on building the foundation - a high-performance language server (LSP) written in Rust that can analyse CloudFormation YAML/JSON and deliver near-instant diagnostics, even on large workspaces.
+
+## 🎯 The Three-Phase Journey
+
+WA2 is being built in three phases:
+
+1. **Syntax** ✅ (Current) - Parse CloudFormation, validate structure, check resource types and properties
+2. **Semantics** (Next) - Understand cross-resource relationships, dependencies, and runtime behavior
+3. **Intent** (Goal) - Validate against your architectural principles and Well-Architected best practices
+
+This repository is being built over **45 days**, starting December 1, 2025.
 
 ## Preview
-![Markdown Logo](assets/images/wa2.screenshot.png)
 
-## ✨ Goals (Phase 1)
+![WA2 Screenshot](assets/images/wa2.screenshot.png)
 
-The initial version is intentionally small and focused:
+## ✨ Current Capabilities (Phase 1 - Day 16)
 
-- **Extremely fast LSP** (written in Rust)
-- **Local, per-file structural validation**
-- **Parse CloudFormation YAML/JSON (L1 parsing)**
-- **Minimal resource-reference graph (L2 structural IR)**
-- **Immediate diagnostics inside VS Code**
+**CloudFormation Validation:**
+- ✅ Full YAML and JSON parsing with accurate position tracking
+- ✅ Resource type validation against AWS CloudFormation spec
+- ✅ Required and unknown property detection
+- ✅ Type checking with intelligent type resolution
+- ✅ Parameters and Conditions section support
 
-This early work lays the foundation for more advanced analysis, without
-introducing any higher-level semantics yet.
+**Intrinsic Functions (12 fully validated):**
+- Core: `!Ref`, `!GetAtt`, `!Sub`, `!Join`, `!Select`, `!GetAZs`
+- Conditionals: `!If` with full Conditions support
+- Logic: `!Equals`, `!Not`, `!And`, `!Or`, `!Condition`
 
-## 🚧 Current Status
+**Error Recovery:**
+- Levenshtein edit distance for "Did you mean..." suggestions
+- LSP CodeActions (quick fixes) - click the lightbulb to fix typos instantly
+- Works for GetAtt attributes, Ref targets, and property names
 
-The extension launches a custom Rust LSP (`wa2lsp`) and returns real-time diagnostics.  
-Initial structural checks — including YAML/JSON parsing and basic CloudFormation shape validation — are implemented.
+**Performance:**
+- All validation completes in <100ms
+- Rust-powered LSP for maximum speed
+- Time-budgeted analysis ensures editor stays responsive
 
-This repository is being built over **45 days**, starting December 1, 2025.  
-(Originally 30 days… but let’s be honest, December is December! 😊)
+## 🚧 What's Working Right Now
 
-## Supported file types
+Open a CloudFormation template and WA2 immediately:
+- Catches unknown resource types
+- Flags missing required properties (e.g., Lambda `Code` property)
+- Validates intrinsic function references exist
+- Checks property types match expectations
+- Suggests corrections for typos
+- Provides one-click fixes via CodeActions
 
-Phase 1 focuses on CloudFormation templates written in:
+All diagnostics appear as you type, with no deployment required.
 
-- `.yaml`/`.yml`
-- `.json`
-
-## 🛠 How to build
+## 🛠 How to Build
 
 ### 1. Build the LSP server
 
 From the repository root:
-
 ```bash
 git clone https://github.com/unremarkable-technology/wa2-vscode-extension
 cd wa2-vscode-extension
 cargo install --path server/wa2lsp
 ```
 
-This installs the wa2lsp binary into your Cargo bin directory (typically ~/.cargo/bin), which should already be on your PATH.
+This installs the `wa2lsp` binary into your Cargo bin directory (typically `~/.cargo/bin`).
 
 Verify:
-
 ```bash
 wa2lsp --version
 ```
-
-Ensure the resulting binary (wa2lsp) is on your $PATH.
 
 ### 2. Run the extension
 ```bash
 cd client/wa2
 npm install
-npm run compile    # or npm run watch, depending on your setup
+npm run compile    # or npm run watch for development
 ```
 
-Then press F5 in VS Code to launch the Extension Development Host.
+Then press **F5** in VS Code to launch the Extension Development Host.
+
+## 📋 Supported File Types
+
+Phase 1 focuses on CloudFormation templates:
+- `.yaml`, `.yml`
+- `.json`
 
 ## 🧩 Architecture
-
 ```
 VS Code client (TypeScript)
       ⬇ LSP / stdio
 Rust language server (tower-lsp)
-      ⬇ parses
-CloudFormation YAML/JSON (L1)
+      ⬇ parses (saphyr/jsonc-parser)
+CloudFormation YAML/JSON
       ⬇ builds
-Minimal structural IR (L2)
+Intermediate Representation (IR)
+      ⬇ validates
+AWS CloudFormation Spec + Symbol Table
+      ⬇ produces
+Diagnostics + CodeActions
 ```
-The LSP executes fast-path analysis under strict time budgets, ensuring the editor stays snappy.
+
+The LSP is built with:
+- **tower-lsp** - LSP protocol framework
+- **saphyr** - YAML parsing with position tracking
+- **jsonc-parser** - JSON parsing with comments
+
+## 🎓 What's Next
+
+**Phase 1 completion:**
+- Hover information (documentation on hover)
+- Go to definition
+- Remaining intrinsic functions
+- Circular dependency detection
+
+**Phase 2 (Semantics):**
+- Cross-resource relationship analysis
+- Dependency graph validation
+- Runtime behavior prediction
+
+**Phase 3 (Intent):**
+- Well-Architected Framework integration
+- Custom architectural rules
+- Team-specific best practices
 
 ## 📦 License
 
 This project is released under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
+
+---
+
+**Status:** Active development (Day 16 of 45) | Built with ❤️ in Rust
