@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
-use crate::spec::{cfn_ir::CfnTemplate, spec_store::SpecStore};
+use crate::spec::{cfn_ir::types::CfnTemplate, spec_store::SpecStore};
 
 /// per-document state held by the core engine
 struct DocumentState {

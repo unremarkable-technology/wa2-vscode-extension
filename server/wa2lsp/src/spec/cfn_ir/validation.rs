@@ -1,0 +1,584 @@
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
+use url::Url;
+
+use crate::spec::{
+	cfn_ir::types::{CfnTemplate, CfnValue},
+	code_utils::names,
+	spec_store::{
+		AttributeName, CollectionKind, PrimitiveType, PropertyName, ResourceTypeId, ShapeKind,
+		SpecStore, TypeInfo,
+	},
+	symbol_table::SymbolTable,
+	type_resolver,
+};
+
+// In helper to build diagnostics with suggestions
+fn create_diagnostic_with_suggestion(
+	range: Range,
+	severity: DiagnosticSeverity,
+	code: &str,
+	message: String,
+	suggestion: Option<String>,
+) -> Diagnostic {
+	let mut diag = Diagnostic {
+		range,
+		severity: Some(severity),
+		code: Some(NumberOrString::String(code.into())),
+		source: Some("wa2-lsp".into()),
+		message,
+		..Default::default()
+	};
+
+	// Store suggestion in data field as JSON
+	if let Some(suggestion) = suggestion
+		&& let Ok(json) = serde_json::to_value(serde_json::json!({
+			"suggestion": suggestion
+		})) {
+		diag.data = Some(json);
+	}
+
+	diag
+}
+
+impl CfnTemplate {
+	/// Validate this template against the CloudFormation spec
+	pub fn validate_against_spec(&self, spec_store: &SpecStore, _uri: &Url) -> Vec<Diagnostic> {
+		let mut diagnostics = Vec::new();
+
+		// Build symbol table for intrinsic validation
+		let symbols = SymbolTable::from_template(self);
+
+		// Validate each resource
+		for (logical_id, resource) in &self.resources {
+			let type_id = ResourceTypeId(resource.resource_type.clone());
+
+			// Check if resource type exists in spec
+			if !spec_store.resource_types.contains_key(&type_id) {
+				diagnostics.push(Diagnostic {
+					range: resource.type_range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_UNKNOWN_RESOURCE_TYPE".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Unknown CloudFormation resource type: {} (in resource `{}`)",
+						resource.resource_type, logical_id
+					),
+					..Default::default()
+				});
+				continue;
+			}
+
+			// Get resource spec for property validation
+			let resource_spec = match spec_store.resource_types.get(&type_id) {
+				Some(spec) => spec,
+				None => continue,
+			};
+
+			// Check for required properties
+			for (prop_name, prop_spec) in &resource_spec.properties {
+				if prop_spec.required && !resource.properties.contains_key(&prop_name.0) {
+					diagnostics.push(Diagnostic {
+						range: resource.logical_id_range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_REQUIRED_PROPERTY_MISSING".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"Resource `{}` is missing required property `{}`",
+							logical_id, prop_name.0
+						),
+						..Default::default()
+					});
+				}
+			}
+
+			// Check for unknown properties and validate types
+			for (prop_name, prop_value) in &resource.properties {
+				let prop_id = PropertyName(prop_name.clone());
+
+				match resource_spec.properties.get(&prop_id) {
+					Some(prop_spec) => {
+						// Property exists - validate type
+						Self::validate_property_type(
+							prop_value,
+							&prop_spec.type_info,
+							&symbols,
+							spec_store,
+							logical_id,
+							prop_name,
+							&mut diagnostics,
+						);
+					}
+					// For unknown properties
+					None => {
+						let candidates = resource_spec.properties.keys().map(|k| k.0.as_str());
+						let suggestion_data = names::find_closest(prop_name, candidates);
+
+						let (message, suggestion) = if let Some((suggested, _)) = suggestion_data {
+							(
+								format!(
+									"Unknown property `{}` for resource type `{}` (in resource `{}`). Did you mean `{}`?",
+									prop_name, resource.resource_type, logical_id, suggested
+								),
+								Some(suggested.to_string()),
+							)
+						} else {
+							(
+								format!(
+									"Unknown property `{}` for resource type `{}` (in resource `{}`)",
+									prop_name, resource.resource_type, logical_id
+								),
+								None,
+							)
+						};
+
+						diagnostics.push(create_diagnostic_with_suggestion(
+							prop_value.range(),
+							DiagnosticSeverity::WARNING,
+							"WA2_CFN_UNKNOWN_PROPERTY",
+							message,
+							suggestion,
+						));
+					}
+				}
+
+				// Validate intrinsic functions (existence checks)
+				Self::validate_intrinsics(prop_value, &symbols, &mut diagnostics, spec_store); // Pass spec_store
+			}
+		}
+
+		diagnostics
+	}
+
+	// Validate that a property value's type matches what the spec expects
+	fn validate_property_type(
+		value: &CfnValue,
+		expected: &TypeInfo,
+		symbols: &SymbolTable,
+		spec: &SpecStore,
+		resource_id: &str,
+		prop_name: &str,
+		diagnostics: &mut Vec<Diagnostic>,
+	) {
+		// Resolve the actual type of the value
+		let actual = match type_resolver::resolve_type(value, symbols, spec) {
+			Some(t) => t,
+			None => return, // Can't resolve type (e.g., null, unknown intrinsic)
+		};
+
+		// Check if types are compatible
+		if !Self::types_compatible(&actual, expected) {
+			diagnostics.push(Diagnostic {
+				range: value.range(),
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_TYPE_MISMATCH".into())),
+				source: Some("wa2-lsp".into()),
+				message: format!(
+					"Type mismatch in resource `{}` property `{}`: expected {}, got {}",
+					resource_id,
+					prop_name,
+					Self::format_type(expected),
+					Self::format_type(&actual)
+				),
+				..Default::default()
+			});
+		}
+	}
+
+	// Check if two types are compatible
+	fn types_compatible(actual: &TypeInfo, expected: &TypeInfo) -> bool {
+		// Check collection compatibility first
+		match (&actual.collection, &expected.collection) {
+			(CollectionKind::Scalar, CollectionKind::Scalar) => {}
+			(CollectionKind::List, CollectionKind::List) => {}
+			(CollectionKind::Map, CollectionKind::Map) => {}
+			_ => return false, // Collection mismatch
+		}
+
+		// Check shape compatibility
+		match (&actual.kind, &expected.kind) {
+			// Exact match
+			(ShapeKind::Primitive(a), ShapeKind::Primitive(e)) if a == e => true,
+
+			// Any accepts anything
+			(_, ShapeKind::Any) => true,
+			(ShapeKind::Any, _) => true,
+
+			// Number type compatibility - be lenient like CloudFormation
+			// Integer/Long/Double can all be used interchangeably
+			(
+				ShapeKind::Primitive(PrimitiveType::Integer),
+				ShapeKind::Primitive(PrimitiveType::Double),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Integer),
+				ShapeKind::Primitive(PrimitiveType::Long),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Long),
+				ShapeKind::Primitive(PrimitiveType::Double),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Long),
+				ShapeKind::Primitive(PrimitiveType::Integer),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Double),
+				ShapeKind::Primitive(PrimitiveType::Integer),
+			) => true,
+			(
+				ShapeKind::Primitive(PrimitiveType::Double),
+				ShapeKind::Primitive(PrimitiveType::Long),
+			) => true,
+
+			// Complex types must match exactly (for now)
+			(ShapeKind::Complex(a), ShapeKind::Complex(e)) => a == e,
+
+			_ => false,
+		}
+	}
+
+	// Format a type for display in error messages
+	fn format_type(type_info: &TypeInfo) -> String {
+		let base = match &type_info.kind {
+			ShapeKind::Primitive(p) => match p {
+				PrimitiveType::String => "String",
+				PrimitiveType::Integer => "Integer",
+				PrimitiveType::Long => "Long",
+				PrimitiveType::Double => "Double",
+				PrimitiveType::Boolean => "Boolean",
+				PrimitiveType::Timestamp => "Timestamp",
+				PrimitiveType::Json => "Json",
+				PrimitiveType::Other(s) => s.as_str(),
+			},
+			ShapeKind::Complex(id) => &id.0,
+			ShapeKind::Any => "Any",
+		};
+
+		match type_info.collection {
+			CollectionKind::Scalar => base.to_string(),
+			CollectionKind::List => format!("List<{}>", base),
+			CollectionKind::Map => format!("Map<{}>", base),
+		}
+	}
+
+	// Add this function before validate_intrinsics:
+	/// Extract ${Variable} references from a Sub template string
+	fn extract_sub_variables(template: &str) -> Vec<String> {
+		let mut variables = Vec::new();
+		let mut chars = template.chars().peekable();
+
+		while let Some(ch) = chars.next() {
+			if ch == '$' && chars.peek() == Some(&'{') {
+				chars.next(); // consume '{'
+				let mut var_name = String::new();
+
+				while let Some(&ch) = chars.peek() {
+					if ch == '}' {
+						chars.next(); // consume '}'
+						if !var_name.is_empty() {
+							variables.push(var_name);
+						}
+						break;
+					}
+					var_name.push(ch);
+					chars.next();
+				}
+			}
+		}
+
+		variables
+	}
+
+	fn validate_intrinsics(
+		value: &CfnValue,
+		symbols: &SymbolTable,
+		diagnostics: &mut Vec<Diagnostic>,
+		spec: &SpecStore,
+	) {
+		match value {
+			CfnValue::Ref { target, range } => {
+				// For invalid Ref
+				if !symbols.has_ref_target(target) {
+					let mut candidates: Vec<&str> = Vec::new();
+					candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
+					candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
+					candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
+
+					let suggestion_data = names::find_closest(target, candidates.into_iter());
+
+					let (message, suggestion) = if let Some((suggested, _)) = suggestion_data {
+						(
+							format!(
+								"!Ref target `{}` does not exist. Did you mean `{}`?",
+								target, suggested
+							),
+							Some(suggested.to_string()),
+						)
+					} else {
+						(
+							format!(
+								"!Ref target `{}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+								target
+							),
+							None,
+						)
+					};
+
+					diagnostics.push(create_diagnostic_with_suggestion(
+						*range,
+						DiagnosticSeverity::ERROR,
+						"WA2_CFN_INVALID_REF",
+						message,
+						suggestion,
+					));
+				}
+			}
+			CfnValue::GetAtt {
+				target,
+				attribute,
+				range,
+			} => {
+				// Check if the resource exists
+				if !symbols.has_resource(target) {
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_INVALID_GETATT_RESOURCE".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!("!GetAtt target resource `{}` does not exist.", target),
+						..Default::default()
+					});
+					return; // Can't validate attribute if resource doesn't exist
+				}
+
+				// Validate attribute exists for the resource type
+				if let Some(resource_entry) = symbols.resources.get(target) {
+					let type_id = ResourceTypeId(resource_entry.resource_type.clone());
+					if let Some(resource_spec) = spec.resource_types.get(&type_id) {
+						let attr_name = AttributeName(attribute.clone());
+						// For GetAtt attributes
+						if !resource_spec.attributes.contains_key(&attr_name) {
+							let candidates = resource_spec.attributes.keys().map(|k| k.0.as_str());
+							let suggestion_data = names::find_closest(attribute, candidates);
+
+							let (message, suggestion) = if let Some((suggested, _)) =
+								suggestion_data
+							{
+								(
+									format!(
+										"!GetAtt attribute `{}` does not exist on resource type `{}`. Did you mean `{}`?",
+										attribute, resource_entry.resource_type, suggested
+									),
+									Some(serde_json::json!({
+										"kind": "getatt",
+										"target": target,
+										"attribute": suggested
+									})),
+								)
+							} else {
+								(
+									format!(
+										"!GetAtt attribute `{}` does not exist on resource type `{}`. This resource type has no attributes.",
+										attribute, resource_entry.resource_type
+									),
+									None,
+								)
+							};
+
+							let mut diag = Diagnostic {
+								range: *range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message,
+								..Default::default()
+							};
+
+							if let Some(sugg) = suggestion {
+								diag.data = Some(sugg);
+							}
+
+							diagnostics.push(diag);
+						}
+					}
+				}
+			}
+			// In validate_intrinsics() method, add before the Array/Object cases:
+			CfnValue::Sub {
+				template,
+				variables,
+				range,
+			} => {
+				// Extract ${Variable} references from template
+				let var_refs = Self::extract_sub_variables(template);
+
+				for var_ref in var_refs {
+					// Check if variable exists in explicit variables map
+					if let Some(vars) = variables
+						&& vars.contains_key(&var_ref)
+					{
+						continue; // Found in explicit variables
+					}
+
+					// Check if it's a valid Ref target (resource/parameter/pseudo-param)
+					if !symbols.has_ref_target(&var_ref) {
+						let mut candidates: Vec<&str> = Vec::new();
+						candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
+						candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
+						candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
+
+						let suggestion_data = crate::spec::code_utils::names::find_closest(
+							&var_ref,
+							candidates.into_iter(),
+						);
+
+						let message = if let Some((suggested, _)) = suggestion_data {
+							format!(
+								"!Sub variable `${{{}}}` does not exist. Did you mean `{}`?",
+								var_ref, suggested
+							)
+						} else {
+							format!(
+								"!Sub variable `${{{}}}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+								var_ref
+							)
+						};
+
+						diagnostics.push(Diagnostic {
+							range: *range,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_INVALID_SUB_VARIABLE".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message,
+							..Default::default()
+						});
+					}
+				}
+
+				// Recursively validate variable values if present
+				if let Some(vars) = variables {
+					for val in vars.values() {
+						Self::validate_intrinsics(val, symbols, diagnostics, spec);
+					}
+				}
+			}
+			CfnValue::GetAZs { region, .. } => {
+				// Recursively validate the region value
+				Self::validate_intrinsics(region, symbols, diagnostics, spec);
+			}
+			CfnValue::Join { values, .. } => {
+				// Recursively validate all values in the array
+				for value in values {
+					Self::validate_intrinsics(value, symbols, diagnostics, spec);
+				}
+			}
+			CfnValue::Select { index, list, range } => {
+				// Validate index (should be a number or resolve to a number)
+				if let Some(index_type) = type_resolver::resolve_type(index, symbols, spec) {
+					// Check if index is numeric
+					let is_numeric = matches!(
+						index_type.kind,
+						ShapeKind::Primitive(PrimitiveType::Integer)
+							| ShapeKind::Primitive(PrimitiveType::Long)
+							| ShapeKind::Primitive(PrimitiveType::Double)
+					);
+
+					if !is_numeric {
+						diagnostics.push(Diagnostic {
+							range: *range,
+							severity: Some(DiagnosticSeverity::ERROR),
+							code: Some(NumberOrString::String(
+								"WA2_CFN_INVALID_SELECT_INDEX".into(),
+							)),
+							source: Some("wa2-lsp".into()),
+							message: "!Select index must be a number".to_string(),
+							..Default::default()
+						});
+					}
+				}
+
+				// Validate list (should be a list or resolve to a list)
+				if let Some(list_type) = type_resolver::resolve_type(list, symbols, spec)
+					&& list_type.collection != CollectionKind::List
+				{
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_INVALID_SELECT_LIST".into())),
+						source: Some("wa2-lsp".into()),
+						message: "!Select second argument must be a list".to_string(),
+						..Default::default()
+					});
+				}
+
+				// Recursively validate index and list
+				Self::validate_intrinsics(index, symbols, diagnostics, spec);
+				Self::validate_intrinsics(list, symbols, diagnostics, spec);
+			}
+			CfnValue::If {
+				condition_name,
+				value_if_true,
+				value_if_false,
+				range,
+			} => {
+				// Check if the condition exists
+				if !symbols.has_condition(condition_name) {
+					let candidates = symbols.conditions.keys().map(|s| s.as_str());
+					let suggestion_data =
+						crate::spec::code_utils::names::find_closest(condition_name, candidates);
+
+					let message = if let Some((suggested, _)) = suggestion_data {
+						format!(
+							"!If condition `{}` does not exist. Did you mean `{}`?",
+							condition_name, suggested
+						)
+					} else {
+						format!(
+							"!If condition `{}` does not exist. Must reference a condition defined in Conditions section.",
+							condition_name
+						)
+					};
+
+					diagnostics.push(Diagnostic {
+						range: *range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_INVALID_IF_CONDITION".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message,
+						..Default::default()
+					});
+				}
+
+				// Recursively validate both branches
+				Self::validate_intrinsics(value_if_true, symbols, diagnostics, spec);
+				Self::validate_intrinsics(value_if_false, symbols, diagnostics, spec);
+			}
+			CfnValue::Array(items, _) => {
+				for item in items {
+					Self::validate_intrinsics(item, symbols, diagnostics, spec); // Pass spec
+				}
+			}
+			CfnValue::Object(map, _) => {
+				for val in map.values() {
+					Self::validate_intrinsics(val, symbols, diagnostics, spec); // Pass spec
+				}
+			}
+			CfnValue::String(..)
+			| CfnValue::Number(..)
+			| CfnValue::Bool(..)
+			| CfnValue::Null(..) => {}
+		}
+	}
+}

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use tower_lsp::lsp_types::Range;
 
-use super::cfn_ir::CfnTemplate;
+use crate::spec::cfn_ir::types::CfnTemplate;
 
 /// Symbol table built from a CloudFormation template
 #[derive(Debug, Clone)]
@@ -154,7 +154,6 @@ impl SymbolTable {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::spec::cfn_ir::CfnTemplate;
 	use tower_lsp::lsp_types::Url;
 
 	fn test_uri() -> Url {
