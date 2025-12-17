@@ -16,7 +16,7 @@ pub struct CfnTemplate {
 pub struct CfnResource {
 	pub logical_id: String,
 	pub resource_type: String,
-	pub properties: HashMap<String, CfnValue>,
+	pub properties: HashMap<String, (CfnValue, Range)>,
 
 	// Position tracking for diagnostics
 	pub logical_id_range: Range,
@@ -54,8 +54,9 @@ pub enum CfnValue {
 	Bool(bool, Range),
 	Null(Range),
 	Array(Vec<CfnValue>, Range),
-	Object(HashMap<String, CfnValue>, Range),
-	
+	//Object(HashMap<String, CfnValue>, Range),
+	Object(HashMap<String, (CfnValue, Range)>, Range),
+
 	/// !Ref / { "Ref": "LogicalId" }
 	Ref {
 		target: String,
@@ -172,10 +173,22 @@ impl CfnValue {
 		}
 	}
 
-	/// Try to get this value as an object/mapping
-	pub fn as_object(&self) -> Option<&HashMap<String, CfnValue>> {
+	// Return the map with (value, key_range) tuples
+	pub fn as_object(&self) -> Option<&HashMap<String, (CfnValue, Range)>> {
 		match self {
 			CfnValue::Object(map, _) => Some(map),
+			_ => None,
+		}
+	}
+
+	// Helper to get just values (for backward compatibility where ranges aren't needed)
+	pub fn as_object_values(&self) -> Option<HashMap<String, CfnValue>> {
+		match self {
+			CfnValue::Object(map, _) => Some(
+				map.iter()
+					.map(|(k, (v, _))| (k.clone(), v.clone()))
+					.collect(),
+			),
 			_ => None,
 		}
 	}

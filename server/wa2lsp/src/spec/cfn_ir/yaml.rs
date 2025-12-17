@@ -293,16 +293,27 @@ impl CfnResource {
 				}]
 			})?;
 
-		// Extract Properties (optional)
+		// Extract Properties (optional) with key ranges
 		let properties = resource_map
 			.iter()
 			.find(|(k, _)| k.data.as_str() == Some("Properties"))
-			.map(|(_, v)| CfnValue::from_marked_yaml(v))
-			.transpose()?
-			.and_then(|v| match v {
-				CfnValue::Object(map, _) => Some(map),
-				_ => None,
+			.map(|(_, props_node)| {
+				// props_node should be a mapping
+				if let Some(props_map) = props_node.data.as_mapping() {
+					let mut result: HashMap<String, (CfnValue, Range)> = HashMap::default();
+					for (key_node, value_node) in props_map {
+						if let Some(key_str) = key_node.data.as_str() {
+							let value = CfnValue::from_marked_yaml(value_node)?;
+							let key_range = marked_yaml_to_range(key_node); // ← Get the actual key range!
+							result.insert(key_str.to_string(), (value, key_range));
+						}
+					}
+					Ok::<_, Vec<Diagnostic>>(result)
+				} else {
+					Ok(HashMap::new())
+				}
 			})
+			.transpose()?
 			.unwrap_or_default();
 
 		Ok(CfnResource {
@@ -506,30 +517,22 @@ impl CfnValue {
 									range,
 								});
 							}
-
 							// Array form: !Sub ["template", {Var1: val1, Var2: val2}]
 							if let YamlData::Sequence(seq) = &inner.data
 								&& seq.len() == 2 && let YamlData::Value(Scalar::String(template)) =
 								&seq[0].data
 							{
 								let variables = if let YamlData::Mapping(_) = &seq[1].data {
-									Some(
-										CfnValue::from_marked_yaml(&seq[1])?
-											.as_object()
-											.cloned()
-											.unwrap_or_default(),
-									)
+									CfnValue::from_marked_yaml(&seq[1])?.as_object_values() // ← Changed from as_object().cloned()
 								} else {
 									None
 								};
-
 								return Ok(CfnValue::Sub {
 									template: template.to_string(),
 									variables,
 									range,
 								});
 							}
-
 							return Err(vec![Diagnostic {
 								range,
 								severity: Some(DiagnosticSeverity::ERROR),
@@ -812,13 +815,11 @@ impl CfnValue {
 				//
 				if map.len() == 1 {
 					let (k, v) = map.iter().next().unwrap();
-
 					// key must be a simple string
 					if let YamlData::Value(Scalar::String(name)) = &k.data {
 						// For intrinsics, we want the range of the *value node*
 						// (the Ref / Fn::GetAtt payload), not the outer mapping.
 						let inner_range = marked_yaml_to_range(v);
-
 						match name.as_ref() {
 							"Ref" => {
 								// Ref target must be a string scalar
@@ -836,7 +837,6 @@ impl CfnValue {
 									YamlData::Sequence(seq) if seq.len() == 2 => {
 										let res = &seq[0];
 										let attr = &seq[1];
-
 										if let (
 											YamlData::Value(Scalar::String(target)),
 											YamlData::Value(Scalar::String(attribute)),
@@ -875,11 +875,12 @@ impl CfnValue {
 						_ => continue, // skip non-string keys
 					};
 					let value = CfnValue::from_marked_yaml(v)?;
-					obj.insert(key, value);
+					let key_range = marked_yaml_to_range(k); // ← NEW: Get key range
+					obj.insert(key, (value, key_range)); // ← NEW: Store tuple
 				}
 				CfnValue::Object(obj, range)
 			}
-
+			
 			// Handle less common cases
 			YamlData::Representation(_, _, _) => {
 				// Shouldn't happen with default parsing, treat as null

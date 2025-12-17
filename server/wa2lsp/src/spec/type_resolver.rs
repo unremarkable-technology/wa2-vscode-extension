@@ -303,7 +303,7 @@ Resources:
 "#;
 		let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
 		let resource = &template.resources["Test"];
-		let name_value = &resource.properties["Name"];
+		let (name_value, _) = &resource.properties["Name"];
 
 		let resolved = resolve_type(name_value, &symbols, &spec).unwrap();
 		assert!(matches!(
@@ -330,7 +330,7 @@ Resources:
 		let symbols = SymbolTable::from_template(&template);
 
 		let resource = &template.resources["Test"];
-		let name_value = &resource.properties["Name"];
+		let (name_value, _) = &resource.properties["Name"];
 
 		let resolved = resolve_type(name_value, &symbols, &spec).unwrap();
 		assert!(matches!(
@@ -361,7 +361,7 @@ Resources:
 		let symbols = SymbolTable::from_template(&template);
 
 		let resource = &template.resources["Test"];
-		let name_value = &resource.properties["Name"];
+		let (name_value, _) = &resource.properties["Name"];
 
 		let resolved = resolve_type(name_value, &symbols, &spec).unwrap();
 		assert!(matches!(

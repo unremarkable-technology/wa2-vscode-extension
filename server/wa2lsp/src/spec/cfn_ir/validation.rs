@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
 use url::Url;
 
@@ -102,13 +104,14 @@ impl CfnTemplate {
 					continue;
 				}
 
-				let prop_value = &resource.properties[&prop_name.0];
+				let (prop_value, prop_key_range) = &resource.properties[&prop_name.0]; // ← Extract both
 
 				// Validate oneOf constraints
 				if let Some(ref one_of_sets) = prop_spec.one_of_required {
 					Self::validate_one_of_constraint(
 						one_of_sets,
-						prop_value,
+						prop_value,      // ← Pass value
+						*prop_key_range, // ← Pass key range
 						logical_id,
 						&prop_name.0,
 						&mut diagnostics,
@@ -120,22 +123,25 @@ impl CfnTemplate {
 					Self::validate_any_of_constraint(
 						any_of_sets,
 						prop_value,
+						*prop_key_range,
 						logical_id,
 						&prop_name.0,
 						&mut diagnostics,
 					);
 				}
 			}
-
 			// Check for unknown properties and validate types
 			for (prop_name, prop_value) in &resource.properties {
 				let prop_id = PropertyName(prop_name.clone());
+
+				// Extract value and key range from tuple
+				let (value, key_range) = prop_value;
 
 				match resource_spec.properties.get(&prop_id) {
 					Some(prop_spec) => {
 						// Property exists - validate type
 						Self::validate_property_type(
-							prop_value,
+							value,
 							&prop_spec.type_info,
 							&symbols,
 							spec_store,
@@ -168,7 +174,7 @@ impl CfnTemplate {
 						};
 
 						diagnostics.push(create_diagnostic_with_suggestion(
-							prop_value.range(),
+							*key_range,
 							DiagnosticSeverity::WARNING,
 							"WA2_CFN_UNKNOWN_PROPERTY",
 							message,
@@ -178,7 +184,7 @@ impl CfnTemplate {
 				}
 
 				// Validate intrinsic functions (existence checks)
-				Self::validate_intrinsics(prop_value, &symbols, &mut diagnostics, spec_store); // Pass spec_store
+				Self::validate_intrinsics(value, &symbols, &mut diagnostics, spec_store); // Pass spec_store
 			}
 		}
 
@@ -200,6 +206,7 @@ impl CfnTemplate {
 	fn validate_one_of_constraint(
 		one_of_sets: &[Vec<String>],
 		prop_value: &CfnValue,
+		prop_key_range: Range,
 		resource_id: &str,
 		prop_name: &str,
 		diagnostics: &mut Vec<Diagnostic>,
@@ -213,14 +220,13 @@ impl CfnTemplate {
 			_ => return, // oneOf only applies to object properties
 		};
 
-		// Count how many required sets are satisfied
-		let satisfied_count = one_of_sets
+		// Find which constraint sets are satisfied
+		let satisfied_sets: Vec<&Vec<String>> = one_of_sets
 			.iter()
-			.filter(|required_set| {
-				// A set is satisfied if ALL its required properties are present
-				required_set.iter().all(|prop| present_props.contains(prop))
-			})
-			.count();
+			.filter(|required_set| required_set.iter().all(|prop| present_props.contains(prop)))
+			.collect();
+
+		let satisfied_count = satisfied_sets.len();
 
 		match satisfied_count {
 			0 => {
@@ -232,7 +238,7 @@ impl CfnTemplate {
 					.join(" OR ");
 
 				diagnostics.push(Diagnostic {
-					range: prop_value.range(),
+					range: prop_key_range,
 					severity: Some(DiagnosticSeverity::ERROR),
 					code: Some(NumberOrString::String("WA2_CFN_ONEOF_VIOLATION".into())),
 					source: Some("wa2-lsp".into()),
@@ -247,18 +253,43 @@ impl CfnTemplate {
 				// Exactly one satisfied - valid!
 			}
 			_ => {
-				// Multiple satisfied - invalid
+				// Multiple satisfied - show which ones AND what properties caused it
+				let satisfied_list = satisfied_sets
+					.iter()
+					.map(|set| format!("[{}]", set.join(", ")))
+					.collect::<Vec<_>>()
+					.join(" AND ");
+
+				// Find the conflicting properties (properties that appear in multiple sets)
+				let mut prop_counts: HashMap<&str, usize> = HashMap::new();
+				for set in &satisfied_sets {
+					for prop in *set {
+						*prop_counts.entry(prop.as_str()).or_insert(0) += 1;
+					}
+				}
+				let conflicting: Vec<&str> = prop_counts
+					.into_iter()
+					.filter(|(_, count)| *count > 1)
+					.map(|(prop, _)| prop)
+					.collect();
+
+				let conflict_msg = if !conflicting.is_empty() {
+					format!(" Remove one of: {}", conflicting.join(", "))
+				} else {
+					String::new()
+				};
+
 				diagnostics.push(Diagnostic {
-                range: prop_value.range(),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: Some(NumberOrString::String("WA2_CFN_ONEOF_MULTIPLE".into())),
-                source: Some("wa2-lsp".into()),
-                message: format!(
-                    "Property `{}` in resource `{}` satisfies multiple oneOf constraints. Only one should be satisfied.",
-                    prop_name, resource_id
-                ),
-                ..Default::default()
-            });
+					range: prop_key_range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_ONEOF_MULTIPLE".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Property `{}` in resource `{}` has conflicting properties. It satisfies: {}.{}",
+						prop_name, resource_id, satisfied_list, conflict_msg
+					),
+					..Default::default()
+				});
 			}
 		}
 	}
@@ -267,6 +298,7 @@ impl CfnTemplate {
 	fn validate_any_of_constraint(
 		any_of_sets: &[Vec<String>],
 		prop_value: &CfnValue,
+		prop_key_range: Range,
 		resource_id: &str,
 		prop_name: &str,
 		diagnostics: &mut Vec<Diagnostic>,
@@ -292,7 +324,7 @@ impl CfnTemplate {
 				.join(" OR ");
 
 			diagnostics.push(Diagnostic {
-				range: prop_value.range(),
+				range: prop_key_range,
 				severity: Some(DiagnosticSeverity::ERROR),
 				code: Some(NumberOrString::String("WA2_CFN_ANYOF_VIOLATION".into())),
 				source: Some("wa2-lsp".into()),
@@ -772,8 +804,9 @@ impl CfnTemplate {
 				}
 			}
 			CfnValue::Object(map, _) => {
-				for val in map.values() {
-					Self::validate_intrinsics(val, symbols, diagnostics, spec); // Pass spec
+				for (val, _key_range) in map.values() {
+					// ← Destructure the tuple
+					Self::validate_intrinsics(val, symbols, diagnostics, spec);
 				}
 			}
 			CfnValue::String(..)
@@ -819,11 +852,19 @@ Resources:
 			eprintln!("  {}: type={}", name, resource.resource_type);
 
 			if let Some(lt) = resource.properties.get("LaunchTemplate") {
-				eprintln!("    LaunchTemplate range: {:?}", lt.range());
+				let (lt_value, lt_key_range) = lt;
+				eprintln!("    LaunchTemplate value range: {:?}", lt_value.range());
+				eprintln!("    LaunchTemplate key range: {:?}", lt_key_range);
 
-				if let CfnValue::Object(map, _) = lt {
-					for (key, val) in map {
-						eprintln!("      {}: range={:?}", key, val.range());
+				if let CfnValue::Object(map, _) = lt_value {
+					for (key, (val, val_key_range)) in map {
+						// ← Changed: map contains (CfnValue, Range)
+						eprintln!(
+							"      {}: value range={:?}, key range={:?}",
+							key,
+							val.range(),
+							val_key_range
+						);
 					}
 				}
 			}

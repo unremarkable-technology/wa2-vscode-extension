@@ -280,17 +280,38 @@ impl CfnResource {
 			}
 		};
 
-		// Extract Properties (optional)
+		// Extract Properties (optional), with range
 		let properties = resource_obj
 			.get("Properties")
-			.map(|p| p.value.clone())
-			.as_ref()
-			.map(|v| CfnValue::from_json_ast(v, text))
-			.transpose()?
-			.and_then(|v| match v {
-				CfnValue::Object(map, _) => Some(map),
-				_ => None,
+			.and_then(|prop| prop.value.as_object())
+			.map(|obj| {
+				obj.properties
+					.iter()
+					.map(|prop| {
+						let k = prop.name.as_str();
+						let value = CfnValue::from_json_ast(&prop.value, text)?;
+						let value_range = value.range();
+
+						// Create key range - estimate based on value start position
+						let key_range = Range {
+							start: Position {
+								line: value_range.start.line,
+								character: value_range
+									.start
+									.character
+									.saturating_sub((k.len() + 4) as u32),
+							},
+							end: Position {
+								line: value_range.start.line,
+								character: value_range.start.character.saturating_sub(2),
+							},
+						};
+
+						Ok::<_, Vec<Diagnostic>>((k.to_string(), (value, key_range)))
+					})
+					.collect::<Result<HashMap<_, _>, Vec<Diagnostic>>>()
 			})
+			.transpose()?
 			.unwrap_or_default();
 
 		Ok(CfnResource {
@@ -482,23 +503,17 @@ impl CfnValue {
 									range: inner_range,
 								});
 							}
-
 							// Array form: {"Fn::Sub": ["template", {vars}]}
 							if let Some(arr) = value.as_array()
 								&& arr.elements.len() == 2
 								&& let Some(template) = arr.elements[0].as_string_lit()
 							{
 								let variables = if arr.elements[1].as_object().is_some() {
-									Some(
-										CfnValue::from_json_ast(&arr.elements[1], text)?
-											.as_object()
-											.cloned()
-											.unwrap_or_default(),
-									)
+									CfnValue::from_json_ast(&arr.elements[1], text)?
+										.as_object_values() // ← Changed from as_object()
 								} else {
 									None
 								};
-
 								return Ok(CfnValue::Sub {
 									template: template.value.to_string(),
 									variables,
@@ -682,10 +697,27 @@ impl CfnValue {
 
 			// Fallback: plain object → CfnValue::Object
 			let mut map = HashMap::new();
-			for prop in obj.properties.iter() {
-				let key = prop.name.clone().into_string();
+			for prop in &obj.properties {
+				let key = prop.name.as_str().to_string();
 				let value = CfnValue::from_json_ast(&prop.value, text)?;
-				map.insert(key, value);
+
+				// Calculate key range for this property
+				let value_range = value.range();
+				let key_range = Range {
+					start: Position {
+						line: value_range.start.line,
+						character: value_range
+							.start
+							.character
+							.saturating_sub((key.len() + 4) as u32),
+					},
+					end: Position {
+						line: value_range.start.line,
+						character: value_range.start.character.saturating_sub(2),
+					},
+				};
+
+				map.insert(key, (value, key_range)); // ← Store tuple
 			}
 			return Ok(CfnValue::Object(map, range));
 		}

@@ -36,7 +36,7 @@ Resources:
 	assert_eq!(bucket.properties.len(), 1);
 
 	let bucket_name = bucket.properties.get("BucketName").unwrap();
-	assert_eq!(bucket_name.as_str(), Some("test-bucket"));
+	assert_eq!(bucket_name.0.as_str(), Some("test-bucket"));
 }
 
 #[test]
@@ -98,9 +98,9 @@ Resources:
 	let encryption = bucket.properties.get("BucketEncryption").unwrap();
 
 	// Check it's an object
-	assert!(encryption.as_object().is_some());
+	assert!(encryption.0.as_object().is_some());
 
-	let encryption_obj = encryption.as_object().unwrap();
+	let encryption_obj = encryption.0.as_object().unwrap();
 	assert!(encryption_obj.contains_key("ServerSideEncryptionConfiguration"));
 }
 
@@ -123,7 +123,7 @@ Resources:
 	let bucket = &template.resources["MyBucket"];
 	let tags = bucket.properties.get("Tags").unwrap();
 
-	let tags_array = tags.as_array().unwrap();
+	let tags_array = tags.0.as_array().unwrap();
 	assert_eq!(tags_array.len(), 2);
 }
 
@@ -344,7 +344,7 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
-			
+
 			// legacy spec doesn't have these
 			one_of_required: None,
 			any_of_required: None,
@@ -468,7 +468,7 @@ Resources:
 		.expect("BucketName property must exist");
 
 	match bucket_name {
-		CfnValue::Ref { target, .. } => {
+		(CfnValue::Ref { target, .. }, _) => {
 			assert_eq!(target, "OtherBucket");
 		}
 		other => panic!("expected Ref CfnValue, got {:?}", other),
@@ -495,9 +495,12 @@ Resources:
 		.expect("Arn property must exist");
 
 	match arn {
-		CfnValue::GetAtt {
-			target, attribute, ..
-		} => {
+		(
+			CfnValue::GetAtt {
+				target, attribute, ..
+			},
+			_,
+		) => {
 			assert_eq!(target, "MyBucket");
 			assert_eq!(attribute, "Arn");
 		}
@@ -525,9 +528,12 @@ Resources:
 		.expect("Arn property must exist");
 
 	match arn {
-		CfnValue::GetAtt {
-			target, attribute, ..
-		} => {
+		(
+			CfnValue::GetAtt {
+				target, attribute, ..
+			},
+			_,
+		) => {
 			assert_eq!(target, "MyBucket");
 			assert_eq!(attribute, "Arn");
 		}
@@ -559,7 +565,7 @@ fn json_intrinsic_ref_object_converts_to_ref_value() {
 		.expect("BucketName property must exist");
 
 	match bucket_name {
-		CfnValue::Ref { target, .. } => {
+		(CfnValue::Ref { target, .. }, _) => {
 			assert_eq!(target, "OtherBucket");
 		}
 		other => panic!("expected Ref CfnValue, got {:?}", other),
@@ -590,9 +596,12 @@ fn json_intrinsic_getatt_forms_convert_to_getatt_value() {
 		.expect("Arn property must exist");
 
 	match arn_array {
-		CfnValue::GetAtt {
-			target, attribute, ..
-		} => {
+		(
+			CfnValue::GetAtt {
+				target, attribute, ..
+			},
+			_,
+		) => {
 			assert_eq!(target, "MyBucket");
 			assert_eq!(attribute, "Arn");
 		}
@@ -621,9 +630,12 @@ fn json_intrinsic_getatt_forms_convert_to_getatt_value() {
 		.expect("Arn property must exist");
 
 	match arn_string {
-		CfnValue::GetAtt {
-			target, attribute, ..
-		} => {
+		(
+			CfnValue::GetAtt {
+				target, attribute, ..
+			},
+			_,
+		) => {
 			assert_eq!(target, "MyBucket");
 			assert_eq!(attribute, "Arn");
 		}
@@ -650,7 +662,7 @@ Resources:
 		.expect("BucketName property must exist");
 
 	match bucket_name {
-		CfnValue::Ref { target, .. } => {
+		(CfnValue::Ref { target, .. }, _) => {
 			assert_eq!(target, "OtherBucket");
 		}
 		other => panic!("expected Ref CfnValue, got {:?}", other),
@@ -676,9 +688,12 @@ Resources:
 		.expect("Arn property must exist");
 
 	match arn {
-		CfnValue::GetAtt {
-			target, attribute, ..
-		} => {
+		(
+			CfnValue::GetAtt {
+				target, attribute, ..
+			},
+			_,
+		) => {
 			assert_eq!(target, "MyBucket");
 			assert_eq!(attribute, "Arn");
 		}
@@ -1140,11 +1155,14 @@ Resources:
 	let bucket_name = bucket.properties.get("BucketName").unwrap();
 
 	match bucket_name {
-		CfnValue::Sub {
-			template,
-			variables,
-			..
-		} => {
+		(
+			CfnValue::Sub {
+				template,
+				variables,
+				..
+			},
+			_,
+		) => {
 			assert_eq!(template, "my-bucket-${AWS::Region}");
 			assert!(variables.is_none());
 		}
@@ -1190,7 +1208,7 @@ Resources:
 	let azs = resource.properties.get("AvailabilityZones").unwrap();
 
 	match azs {
-		CfnValue::GetAZs { region, .. } => {
+		(CfnValue::GetAZs { region, .. }, _) => {
 			assert!(matches!(**region, CfnValue::String(ref s, _) if s.is_empty()));
 		}
 		other => panic!("expected GetAZs CfnValue, got {:?}", other),
@@ -1212,9 +1230,12 @@ Resources:
 	let bucket_name = bucket.properties.get("BucketName").unwrap();
 
 	match bucket_name {
-		CfnValue::Join {
-			delimiter, values, ..
-		} => {
+		(
+			CfnValue::Join {
+				delimiter, values, ..
+			},
+			_,
+		) => {
 			assert_eq!(delimiter, "-");
 			assert_eq!(values.len(), 3);
 
@@ -1246,7 +1267,7 @@ Resources:
 	let az = instance.properties.get("AvailabilityZone").unwrap();
 
 	match az {
-		CfnValue::Select { index, list, .. } => {
+		(CfnValue::Select { index, list, .. }, _) => {
 			// Check index is 0
 			assert!(matches!(**index, CfnValue::Number(n, _) if n == 0.0));
 
@@ -1348,12 +1369,15 @@ Resources:
 	let bucket_name = bucket.properties.get("BucketName").unwrap();
 
 	match bucket_name {
-		CfnValue::If {
-			condition_name,
-			value_if_true,
-			value_if_false,
-			..
-		} => {
+		(
+			CfnValue::If {
+				condition_name,
+				value_if_true,
+				value_if_false,
+				..
+			},
+			_,
+		) => {
 			assert_eq!(condition_name, "IsProduction");
 			assert!(matches!(**value_if_true, CfnValue::String(ref s, _) if s == "prod-bucket"));
 			assert!(matches!(**value_if_false, CfnValue::String(ref s, _) if s == "dev-bucket"));

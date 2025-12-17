@@ -43,7 +43,7 @@ impl fmt::Display for CfnResource {
 			props.sort_by_key(|(name, _)| *name);
 
 			for (name, value) in props {
-				writeln!(f, "{}{}: {}", " ".repeat(6), name, value)?;
+				writeln!(f, "{}{}: {}", " ".repeat(6), name, value.0)?;
 			}
 		}
 		Ok(())
@@ -150,7 +150,7 @@ impl fmt::Display for CfnValue {
 					if i > 0 {
 						write!(f, ", ")?;
 					}
-					write!(f, "{}: {}", k, v)?;
+					write!(f, "{}: {}", k, v.0)?;
 				}
 				write!(f, "}}")
 			}
