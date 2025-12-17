@@ -9,6 +9,8 @@ use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::spec::registry_store;
+
 use super::spec_source::{SpecDownload, SpecSource, SpecSourceError};
 use super::spec_store::SpecStore;
 
@@ -71,6 +73,45 @@ impl SpecCacheManager {
 			cache_dir,
 			cache_key,
 		}
+	}
+
+	/// Load a SpecStore from registry schemas, using the on-disk cache where possible.
+	///
+	/// Policy is the same as load_spec_store() but downloads ZIP of schemas instead.
+	pub async fn load_registry_spec_store(&self) -> Result<Arc<SpecStore>, SpecCacheError> {
+		fs::create_dir_all(&self.cache_dir)?;
+
+		// 1. Try to use existing cache if it's fresh and parseable.
+		if let Some(meta) = self.read_meta().ok().flatten()
+			&& !Self::is_expired(meta.fetched_at)
+			&& let Ok(store) = self.load_registry_from_cache()
+		{
+			return Ok(Arc::new(store));
+		}
+
+		// 2. Cache missing/expired/corrupt → refresh from network.
+		let download = self.source.download_schema_zip().await?;
+		let store = self.build_registry_store_from_download(&download)?;
+
+		// Persist to disk; if it fails we still return the in-memory store.
+		let _ = self.write_cache(&download);
+
+		Ok(Arc::new(store))
+	}
+
+	fn load_registry_from_cache(&self) -> Result<SpecStore, SpecCacheError> {
+		let path = self.spec_json_path();
+		let bytes = fs::read(path)?;
+		registry_store::build_from_zip(&bytes.into())
+			.map_err(|e| SpecCacheError::Build(e.to_string()))
+	}
+
+	fn build_registry_store_from_download(
+		&self,
+		download: &SpecDownload,
+	) -> Result<SpecStore, SpecCacheError> {
+		registry_store::build_from_zip(&download.body)
+			.map_err(|e| SpecCacheError::Build(e.to_string()))
 	}
 
 	/// Load a SpecStore, using the on-disk cache where possible.

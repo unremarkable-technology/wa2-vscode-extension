@@ -25,6 +25,9 @@ pub enum SpecSourceError {
 
 	#[error("failed to decompress CloudFormation spec: {0}")]
 	Decompression(#[from] std::io::Error),
+
+	#[error("failed to extract ZIP archive: {0}")]
+	ZipExtraction(#[from] zip::result::ZipError),
 }
 
 /// Raw download of the CloudFormation resource specification.
@@ -51,6 +54,25 @@ pub struct SpecSource {
 }
 
 impl SpecSource {
+	/// Create a SpecSource for downloading registry schemas (ZIP format).
+	/// Uses the CloudFormation schema registry URL for the given region.
+	pub fn for_region_schemas(region: &str) -> Result<Self, SpecSourceError> {
+		// Schema registry URLs follow this pattern for all regions
+		let url_str = format!(
+			"https://schema.cloudformation.{}.amazonaws.com/CloudformationSchema.zip",
+			region
+		);
+		let url = Url::parse(&url_str)?;
+		Ok(Self::from_url(url))
+	}
+
+	/// Download the registry schema ZIP file.
+	/// Returns the raw bytes that can be extracted as a ZIP archive.
+	pub async fn download_schema_zip(&self) -> Result<SpecDownload, SpecSourceError> {
+		// Use existing download() method - ZIP files aren't gzipped
+		self.download().await
+	}
+
 	/// Create a SpecSource for a given region, using AWS's published
 	/// resource specification URL for that region.
 	pub fn for_region(region: &str) -> Result<Self, SpecSourceError> {

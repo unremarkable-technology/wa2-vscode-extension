@@ -97,7 +97,7 @@ impl LanguageServer for Backend {
 				let region = "us-east-1"; // US East (N. Virginia)
 				//let region = "eu-west-2"; // London, matches your TZ / likely usage.
 
-				let source = match SpecSource::for_region(region) {
+				let source = match SpecSource::for_region_schemas(region) {
 					Ok(s) => s,
 					Err(err) => {
 						client
@@ -118,7 +118,7 @@ impl LanguageServer for Backend {
 
 				let manager = SpecCacheManager::new(source, &cache_dir);
 
-				match manager.load_spec_store().await {
+				match manager.load_registry_spec_store().await {
 					Ok(spec_store) => {
 						{
 							let mut guard = engine.lock().unwrap();
