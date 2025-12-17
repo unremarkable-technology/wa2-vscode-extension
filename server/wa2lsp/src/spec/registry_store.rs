@@ -73,8 +73,50 @@ pub fn build_from_zip(zip_bytes: &Bytes) -> Result<SpecStore, RegistryStoreError
 	})
 }
 
+/// Resolve a $ref path and return the referenced definition's oneOf constraints
+fn resolve_oneof_from_ref(
+	ref_path: &str,
+	definitions: &HashMap<String, PropertySchema>,
+) -> Option<Vec<Vec<String>>> {
+	// ref_path format: "#/definitions/LaunchTemplateSpecification"
+	if !ref_path.starts_with("#/definitions/") {
+		return None;
+	}
+
+	let def_name = ref_path.trim_start_matches("#/definitions/");
+	let definition = definitions.get(def_name)?;
+
+	// Extract oneOf required sets from the definition
+	definition.one_of.as_ref().map(|constraints| {
+		constraints
+			.iter()
+			.filter_map(|c| c.required.clone())
+			.collect()
+	})
+}
+
+/// Similarly for anyOf
+fn resolve_anyof_from_ref(
+	ref_path: &str,
+	definitions: &HashMap<String, PropertySchema>,
+) -> Option<Vec<Vec<String>>> {
+	if !ref_path.starts_with("#/definitions/") {
+		return None;
+	}
+
+	let def_name = ref_path.trim_start_matches("#/definitions/");
+	let definition = definitions.get(def_name)?;
+
+	definition.any_of.as_ref().map(|constraints| {
+		constraints
+			.iter()
+			.filter_map(|c| c.required.clone())
+			.collect()
+	})
+}
+
 /// Parse a single resource provider schema JSON file
-fn parse_resource_schema(
+pub fn parse_resource_schema(
 	filename: &str,
 	json: &str,
 ) -> Result<Option<ResourceTypeDescriptor>, RegistryStoreError> {
@@ -141,6 +183,56 @@ fn parse_resource_schema(
 					}),
 					update_behavior: None,
 					duplicates_allowed: false,
+
+					// Check for oneOf - either directly on property or via $ref
+					one_of_required: {
+						// First check direct oneOf
+						if let Some(constraints) = &prop_schema.one_of {
+							Some(
+								constraints
+									.iter()
+									.filter_map(|c| c.required.clone())
+									.collect(),
+							)
+						}
+						// Then check if property has $ref to a definition with oneOf
+						else if let Some(ref_path) = &prop_schema.ref_path {
+							if let Some(defs) = &schema.definitions {
+								resolve_oneof_from_ref(ref_path, defs)
+							} else {
+								None
+							}
+						} else {
+							None
+						}
+					},
+
+					// Same for anyOf
+					any_of_required: {
+						if let Some(constraints) = &prop_schema.any_of {
+							Some(
+								constraints
+									.iter()
+									.filter_map(|c| c.required.clone())
+									.collect(),
+							)
+						} else if let Some(ref_path) = &prop_schema.ref_path {
+							if let Some(defs) = &schema.definitions {
+								resolve_anyof_from_ref(ref_path, defs)
+							} else {
+								None
+							}
+						} else {
+							None
+						}
+					},
+
+					all_of_required: prop_schema.all_of.as_ref().map(|constraints| {
+						constraints
+							.iter()
+							.filter_map(|c| c.required.clone())
+							.collect()
+					}),
 				};
 
 				properties.insert(PropertyName(prop_name), shape);
@@ -175,13 +267,14 @@ fn parse_property_type(prop: &PropertySchema) -> Result<TypeInfo, RegistryStoreE
 
 	// Handle array types
 	if type_str == "array"
-		&& let Some(ref items) = prop.items {
-			let item_type = parse_property_type(items)?;
-			return Ok(TypeInfo {
-				kind: item_type.kind,
-				collection: CollectionKind::List,
-			});
-		}
+		&& let Some(ref items) = prop.items
+	{
+		let item_type = parse_property_type(items)?;
+		return Ok(TypeInfo {
+			kind: item_type.kind,
+			collection: CollectionKind::List,
+		});
+	}
 
 	// Handle array types
 	if let Some(ref type_str) = prop.r#type {
@@ -239,6 +332,9 @@ struct ResourceSchema {
 	properties: Option<HashMap<String, PropertySchema>>,
 	required: Option<Vec<String>>,
 	read_only_properties: Option<Vec<String>>,
+
+	// Capture definitions section
+	definitions: Option<HashMap<String, PropertySchema>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +344,23 @@ struct PropertySchema {
 	r#type: Option<String>,
 	description: Option<String>,
 	items: Option<Box<PropertySchema>>,
+
+	// JSON Schema validation keywords
+	one_of: Option<Vec<SchemaConstraint>>,
+	any_of: Option<Vec<SchemaConstraint>>,
+	all_of: Option<Vec<SchemaConstraint>>,
+	_required: Option<Vec<String>>,
+
+	#[serde(rename = "$ref")]
+	ref_path: Option<String>, // e.g., "#/definitions/LaunchTemplateSpecification"
+}
+
+/// A schema constraint (for oneOf, anyOf, allOf)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaConstraint {
+	required: Option<Vec<String>>,
+	_properties: Option<HashMap<String, PropertySchema>>,
 }
 
 /// Handle type field that can be either a string or array of strings
@@ -276,4 +389,46 @@ where
 			}
 		}
 	}
+}
+
+#[test]
+fn verify_ec2_instance_oneof_captured() {
+    use std::fs;
+    
+    let cache_dir = dirs::cache_dir().unwrap().join("wa2/cfn-spec");
+    let ec2_schema = cache_dir.join("aws-ec2-instance.json");
+    let content = fs::read_to_string(&ec2_schema).expect("Can read EC2 schema");
+    
+    // Parse the schema
+    let parsed = parse_resource_schema("aws-ec2-instance.json", &content)
+        .expect("Should parse")
+        .expect("Should return descriptor");
+    
+    eprintln!("\n=== EC2::Instance Resource ===");
+    
+    // Check LaunchTemplate property
+    let lt_prop_name = crate::spec::spec_store::PropertyName("LaunchTemplate".to_string());
+    if let Some(lt_prop) = parsed.properties.get(&lt_prop_name) {
+        eprintln!("\nLaunchTemplate property found:");
+        eprintln!("  Type: {:?}", lt_prop.type_info);
+        eprintln!("  OneOf: {:?}", lt_prop.one_of_required);
+        eprintln!("  AnyOf: {:?}", lt_prop.any_of_required);
+        
+        // Verify oneOf was captured
+        assert!(
+            lt_prop.one_of_required.is_some(),
+            "LaunchTemplate should have oneOf constraint"
+        );
+        
+        let one_of = lt_prop.one_of_required.as_ref().unwrap();
+        eprintln!("\n  OneOf constraints:");
+        for (i, constraint_set) in one_of.iter().enumerate() {
+            eprintln!("    Option {}: {:?}", i + 1, constraint_set);
+        }
+        
+        // Should have 2 options
+        assert_eq!(one_of.len(), 2, "Should have 2 oneOf options");
+    } else {
+        panic!("LaunchTemplate property not found!");
+    }
 }

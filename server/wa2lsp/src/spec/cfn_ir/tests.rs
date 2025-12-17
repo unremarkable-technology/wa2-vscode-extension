@@ -217,6 +217,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 	s3_bucket_props.insert(
@@ -231,6 +236,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 	s3_bucket_props.insert(
@@ -245,6 +255,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 
@@ -272,6 +287,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 	lambda_props.insert(
@@ -286,6 +306,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 	lambda_props.insert(
@@ -300,6 +325,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 	lambda_props.insert(
@@ -314,6 +344,11 @@ fn create_test_spec() -> SpecStore {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+			
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 
@@ -893,6 +928,10 @@ fn test_type_mismatch_ref_returns_string() {
 			documentation_url: None,
 			update_behavior: None,
 			duplicates_allowed: false,
+			// legacy spec doesn't have these
+			one_of_required: None,
+			any_of_required: None,
+			all_of_required: None,
 		},
 	);
 

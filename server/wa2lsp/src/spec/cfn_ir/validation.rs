@@ -95,6 +95,38 @@ impl CfnTemplate {
 				}
 			}
 
+			// Check oneOf/anyOf/allOf constraints for complex properties
+			for (prop_name, prop_spec) in &resource_spec.properties {
+				// Skip if property not present - we already checked required
+				if !resource.properties.contains_key(&prop_name.0) {
+					continue;
+				}
+
+				let prop_value = &resource.properties[&prop_name.0];
+
+				// Validate oneOf constraints
+				if let Some(ref one_of_sets) = prop_spec.one_of_required {
+					Self::validate_one_of_constraint(
+						one_of_sets,
+						prop_value,
+						logical_id,
+						&prop_name.0,
+						&mut diagnostics,
+					);
+				}
+
+				// Validate anyOf constraints
+				if let Some(ref any_of_sets) = prop_spec.any_of_required {
+					Self::validate_any_of_constraint(
+						any_of_sets,
+						prop_value,
+						logical_id,
+						&prop_name.0,
+						&mut diagnostics,
+					);
+				}
+			}
+
 			// Check for unknown properties and validate types
 			for (prop_name, prop_value) in &resource.properties {
 				let prop_id = PropertyName(prop_name.clone());
@@ -162,6 +194,115 @@ impl CfnTemplate {
 		}
 
 		diagnostics
+	}
+
+	/// Validate oneOf constraint: exactly one of the required property sets must be satisfied
+	fn validate_one_of_constraint(
+		one_of_sets: &[Vec<String>],
+		prop_value: &CfnValue,
+		resource_id: &str,
+		prop_name: &str,
+		diagnostics: &mut Vec<Diagnostic>,
+	) {
+		// Extract the properties present in this value (if it's an object)
+		let present_props = match prop_value {
+			CfnValue::Object(map, _) => map
+				.keys()
+				.cloned()
+				.collect::<std::collections::HashSet<String>>(),
+			_ => return, // oneOf only applies to object properties
+		};
+
+		// Count how many required sets are satisfied
+		let satisfied_count = one_of_sets
+			.iter()
+			.filter(|required_set| {
+				// A set is satisfied if ALL its required properties are present
+				required_set.iter().all(|prop| present_props.contains(prop))
+			})
+			.count();
+
+		match satisfied_count {
+			0 => {
+				// None satisfied - show what's required
+				let options = one_of_sets
+					.iter()
+					.map(|set| format!("[{}]", set.join(", ")))
+					.collect::<Vec<_>>()
+					.join(" OR ");
+
+				diagnostics.push(Diagnostic {
+					range: prop_value.range(),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_ONEOF_VIOLATION".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Property `{}` in resource `{}` must satisfy exactly one of these requirements: {}",
+						prop_name, resource_id, options
+					),
+					..Default::default()
+				});
+			}
+			1 => {
+				// Exactly one satisfied - valid!
+			}
+			_ => {
+				// Multiple satisfied - invalid
+				diagnostics.push(Diagnostic {
+                range: prop_value.range(),
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String("WA2_CFN_ONEOF_MULTIPLE".into())),
+                source: Some("wa2-lsp".into()),
+                message: format!(
+                    "Property `{}` in resource `{}` satisfies multiple oneOf constraints. Only one should be satisfied.",
+                    prop_name, resource_id
+                ),
+                ..Default::default()
+            });
+			}
+		}
+	}
+
+	/// Validate anyOf constraint: at least one of the required property sets must be satisfied
+	fn validate_any_of_constraint(
+		any_of_sets: &[Vec<String>],
+		prop_value: &CfnValue,
+		resource_id: &str,
+		prop_name: &str,
+		diagnostics: &mut Vec<Diagnostic>,
+	) {
+		let present_props = match prop_value {
+			CfnValue::Object(map, _) => map
+				.keys()
+				.cloned()
+				.collect::<std::collections::HashSet<String>>(),
+			_ => return,
+		};
+
+		// Check if at least one set is satisfied
+		let any_satisfied = any_of_sets
+			.iter()
+			.any(|required_set| required_set.iter().all(|prop| present_props.contains(prop)));
+
+		if !any_satisfied {
+			let options = any_of_sets
+				.iter()
+				.map(|set| format!("[{}]", set.join(", ")))
+				.collect::<Vec<_>>()
+				.join(" OR ");
+
+			diagnostics.push(Diagnostic {
+				range: prop_value.range(),
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_ANYOF_VIOLATION".into())),
+				source: Some("wa2-lsp".into()),
+				message: format!(
+					"Property `{}` in resource `{}` must satisfy at least one of these requirements: {}",
+					prop_name, resource_id, options
+				),
+				..Default::default()
+			});
+		}
 	}
 
 	// Validate that a property value's type matches what the spec expects
@@ -640,5 +781,125 @@ impl CfnTemplate {
 			| CfnValue::Bool(..)
 			| CfnValue::Null(..) => {}
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_oneof_error_spans() {
+		let yaml = r#"
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-12345678
+      InstanceType: t2.micro
+      LaunchTemplate:
+        LaunchTemplateName: "my-template"
+        LaunchTemplateId: "lt-12345"
+        Version: "1"
+"#;
+
+		eprintln!("\n=== Testing OneOf Error Spans ===");
+		eprintln!("YAML content:");
+		for (i, line) in yaml.lines().enumerate() {
+			eprintln!("{:3}: {}", i, line);
+		}
+
+		// Parse template
+		let uri = url::Url::parse("file:///test.yaml").unwrap();
+		let template = CfnTemplate::from_yaml(yaml, &uri).expect("Should parse");
+
+		eprintln!("\nParsed resources:");
+		for (name, resource) in &template.resources {
+			eprintln!("  {}: type={}", name, resource.resource_type);
+
+			if let Some(lt) = resource.properties.get("LaunchTemplate") {
+				eprintln!("    LaunchTemplate range: {:?}", lt.range());
+
+				if let CfnValue::Object(map, _) = lt {
+					for (key, val) in map {
+						eprintln!("      {}: range={:?}", key, val.range());
+					}
+				}
+			}
+		}
+
+		eprintln!("\n=== Analysis ===");
+		eprintln!("Expected error should highlight:");
+		eprintln!("  From line 9 (LaunchTemplate:)");
+		eprintln!("  To line 12 (Version: \"1\")");
+		eprintln!("\nActual LaunchTemplate object range shown above.");
+	}
+}
+
+#[test]
+fn test_oneof_validation_line_numbers() {
+	use std::fs;
+
+	let yaml = r#"AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-12345678
+      InstanceType: t2.micro
+      LaunchTemplate:
+        LaunchTemplateName: "my-template"
+        LaunchTemplateId: "lt-12345"
+        Version: "1"
+"#;
+
+	// Parse and validate
+	let uri = url::Url::parse("file:///test.yaml").unwrap();
+	let template = CfnTemplate::from_yaml(yaml, &uri).expect("Should parse");
+
+	// Need spec store - load from cache
+	let cache_dir = dirs::cache_dir().unwrap().join("wa2/cfn-spec");
+
+	// Load spec - we'll just check one file
+	let ec2_schema = cache_dir.join("aws-ec2-instance.json");
+	let content = fs::read_to_string(&ec2_schema).expect("Schema exists");
+
+	let parsed =
+		crate::spec::registry_store::parse_resource_schema("aws-ec2-instance.json", &content)
+			.expect("Parse")
+			.expect("Descriptor");
+
+	// Create a minimal spec store
+	use crate::spec::spec_store::{ResourceTypeId, SpecStore};
+	use std::collections::HashMap;
+
+	let mut resources = HashMap::new();
+	resources.insert(ResourceTypeId("AWS::EC2::Instance".to_string()), parsed);
+
+	let spec = SpecStore {
+		resource_types: resources,
+		property_types: HashMap::new(),
+	};
+
+	// Validate
+	let diagnostics = template.validate_against_spec(&spec, &uri);
+
+	eprintln!("\n=== Diagnostics ===");
+	for diag in &diagnostics {
+		eprintln!("Code: {:?}", diag.code);
+		eprintln!("Message: {}", diag.message);
+		eprintln!("Range: {:?}", diag.range);
+		eprintln!(
+			"  Start line: {} (0-indexed) = {} (1-indexed in VSCode)",
+			diag.range.start.line,
+			diag.range.start.line + 1
+		);
+		eprintln!(
+			"  End line: {} (0-indexed) = {} (1-indexed in VSCode)",
+			diag.range.end.line,
+			diag.range.end.line + 1
+		);
+		eprintln!();
 	}
 }

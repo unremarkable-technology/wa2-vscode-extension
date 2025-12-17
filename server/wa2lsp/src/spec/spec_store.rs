@@ -47,6 +47,11 @@ impl SpecStore {
 							.as_deref()
 							.map(UpdateBehavior::from_str),
 						duplicates_allowed: raw_prop.duplicates_allowed.unwrap_or(false),
+
+						// legacy spec doesn't have these
+						one_of_required: None,
+						any_of_required: None,
+						all_of_required: None,
 					};
 
 					properties.insert(PropertyName(prop_name), shape);
@@ -86,6 +91,11 @@ impl SpecStore {
 							.as_deref()
 							.map(UpdateBehavior::from_str),
 						duplicates_allowed: raw_prop.duplicates_allowed.unwrap_or(false),
+
+						// legacy spec doesn't have these
+						one_of_required: None,
+						any_of_required: None,
+						all_of_required: None,
 					};
 
 					properties.insert(PropertyName(prop_name), shape);
@@ -177,8 +187,12 @@ pub struct PropertyShape {
 	pub documentation_url: Option<String>,
 	pub update_behavior: Option<UpdateBehavior>,
 	pub duplicates_allowed: bool,
-}
 
+	// Schema validation constraints
+	pub one_of_required: Option<Vec<Vec<String>>>, // Each Vec<String> is one valid combination
+	pub any_of_required: Option<Vec<Vec<String>>>,
+	pub all_of_required: Option<Vec<Vec<String>>>,
+}
 /// Shape of a single attribute on a resource.
 #[derive(Debug, Clone)]
 pub struct AttributeShape {

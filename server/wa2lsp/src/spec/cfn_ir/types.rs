@@ -55,6 +55,7 @@ pub enum CfnValue {
 	Null(Range),
 	Array(Vec<CfnValue>, Range),
 	Object(HashMap<String, CfnValue>, Range),
+	
 	/// !Ref / { "Ref": "LogicalId" }
 	Ref {
 		target: String,
