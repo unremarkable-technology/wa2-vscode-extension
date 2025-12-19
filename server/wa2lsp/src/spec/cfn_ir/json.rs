@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use jsonc_parser::ParseOptions;
 use jsonc_parser::ast::Value;
 use jsonc_parser::common::Ranged;
@@ -7,7 +5,8 @@ use jsonc_parser::errors::ParseError;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use url::Url;
 
-use crate::spec::cfn_ir::types::{CfnCondition, CfnParameter, CfnResource, CfnTemplate, CfnValue};
+use crate::spec::cfn_ir::parser::{self, CfnParser, ObjectEntry};
+use crate::spec::cfn_ir::types::CfnTemplate;
 use crate::spec::intrinsics::{self, IntrinsicKind};
 
 impl CfnTemplate {
@@ -25,7 +24,6 @@ impl CfnTemplate {
 		let parse_result = jsonc_parser::parse_to_ast(text, &Default::default(), &parse_options)
 			.map_err(|err| vec![json_error_to_diagnostic(err, uri)])?;
 
-		// Get the value from ParseResult
 		let root = parse_result.value.ok_or_else(|| {
 			vec![Diagnostic {
 				range: Range {
@@ -46,720 +44,10 @@ impl CfnTemplate {
 			}]
 		})?;
 
-		Self::from_json_ast(&root, text, uri)
+		// Use the unified parser
+		let parser = JsonCfnParser::new(text);
+		parser::parse_template(&parser, &root, uri)
 	}
-
-	fn from_json_ast(root: &Value, text: &str, uri: &Url) -> Result<Self, Vec<Diagnostic>> {
-		let mut resources = HashMap::new();
-		let mut parameters = HashMap::new();
-		let mut conditions = HashMap::new();
-
-		let root_obj = match root.as_object() {
-			Some(obj) => obj,
-			None => {
-				return Err(vec![Diagnostic {
-					range: ranged_to_range(root, text),
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String("WA2_CFN_INVALID_ROOT".into())),
-					source: Some("wa2-lsp".into()),
-					message: "Template root must be an object".to_string(),
-					..Default::default()
-				}]);
-			}
-		};
-
-		// Parse Parameters section
-		if let Some(params_prop) = root_obj.get("Parameters") {
-			let params_obj = match params_prop.value.as_object() {
-				Some(obj) => obj,
-				None => {
-					return Err(vec![Diagnostic {
-						range: ranged_to_range(&params_prop.value, text),
-						severity: Some(DiagnosticSeverity::ERROR),
-						code: Some(NumberOrString::String("WA2_CFN_INVALID_PARAMETERS".into())),
-						source: Some("wa2-lsp".into()),
-						message: "Template Parameters section must be an object".to_string(),
-						..Default::default()
-					}]);
-				}
-			};
-
-			let mut errors = Vec::new();
-			for prop in params_obj.properties.iter() {
-				let param_name = prop.name.clone().into_string();
-				let name_range = ranged_to_range(&prop.name, text);
-				let param_value = prop.value.clone();
-
-				match CfnParameter::from_json_ast(
-					param_name.clone(),
-					&param_value,
-					name_range,
-					text,
-					uri,
-				) {
-					Ok(param) => {
-						parameters.insert(param_name, param);
-					}
-					Err(mut diags) => {
-						errors.append(&mut diags);
-					}
-				}
-			}
-
-			if !errors.is_empty() {
-				return Err(errors);
-			}
-		}
-
-		// Parse Conditions section
-		if let Some(conditions_prop) = root_obj.get("Conditions") {
-			let conditions_obj = match conditions_prop.value.as_object() {
-				Some(obj) => obj,
-				None => {
-					return Err(vec![Diagnostic {
-						range: ranged_to_range(&conditions_prop.value, text),
-						severity: Some(DiagnosticSeverity::ERROR),
-						code: Some(NumberOrString::String("WA2_CFN_INVALID_CONDITIONS".into())),
-						source: Some("wa2-lsp".into()),
-						message: "Template Conditions section must be an object".to_string(),
-						..Default::default()
-					}]);
-				}
-			};
-
-			let mut errors = Vec::new();
-			for prop in conditions_obj.properties.iter() {
-				let condition_name = prop.name.clone().into_string();
-				let name_range = ranged_to_range(&prop.name, text);
-				let condition_value = prop.value.clone();
-
-				match CfnCondition::from_json_ast(
-					condition_name.clone(),
-					&condition_value,
-					name_range,
-					text,
-					uri,
-				) {
-					Ok(condition) => {
-						conditions.insert(condition_name, condition);
-					}
-					Err(mut diags) => {
-						errors.append(&mut diags);
-					}
-				}
-			}
-
-			if !errors.is_empty() {
-				return Err(errors);
-			}
-		}
-
-		// Find Resources section
-		let resources_value = root_obj.get("Resources").map(|prop| prop.value.clone());
-		let resources_value = match resources_value {
-			Some(v) => v,
-			None => {
-				// No Resources section - return empty template
-				return Ok(CfnTemplate {
-					resources: HashMap::new(),
-					parameters: HashMap::new(),
-					conditions: HashMap::new(),
-				});
-			}
-		};
-
-		let resources_obj = match resources_value.as_object() {
-			Some(obj) => obj,
-			None => {
-				return Err(vec![Diagnostic {
-					range: ranged_to_range(&resources_value, text),
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String("WA2_CFN_INVALID_RESOURCES".into())),
-					source: Some("wa2-lsp".into()),
-					message: "Template Resources section must be an object".to_string(),
-					..Default::default()
-				}]);
-			}
-		};
-
-		// Convert each resource - iterate over properties
-		let mut errors = Vec::new();
-		for prop in resources_obj.properties.iter() {
-			let logical_id = prop.name.clone().into_string();
-			let logical_id_range = ranged_to_range(&prop.name, text);
-			let resource_value = prop.value.clone();
-
-			match CfnResource::from_json_ast(
-				logical_id.clone(),
-				&resource_value,
-				logical_id_range,
-				text,
-				uri,
-			) {
-				Ok(resource) => {
-					resources.insert(logical_id, resource);
-				}
-				Err(mut diags) => {
-					errors.append(&mut diags);
-				}
-			}
-		}
-
-		if !errors.is_empty() {
-			return Err(errors);
-		}
-
-		Ok(CfnTemplate {
-			resources,
-			parameters,
-			conditions,
-		})
-	}
-}
-
-impl CfnResource {
-	fn from_json_ast(
-		logical_id: String,
-		node: &Value,
-		logical_id_range: Range,
-		text: &str,
-		_uri: &Url,
-	) -> Result<Self, Vec<Diagnostic>> {
-		let resource_obj = match node.as_object() {
-			Some(obj) => obj,
-			None => {
-				return Err(vec![Diagnostic {
-					range: json_ast_to_range(node, text),
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String(
-						"WA2_CFN_RESOURCE_NOT_MAPPING".into(),
-					)),
-					source: Some("wa2-lsp".into()),
-					message: format!(
-						"Template: resource `{logical_id}` is not an object; \
-                         CloudFormation resources must be objects with `Type` and `Properties`."
-					),
-					..Default::default()
-				}]);
-			}
-		};
-
-		// Extract Type
-		let type_prop = resource_obj.get("Type").map(|p| p.value.clone());
-		let (type_str, type_range) = match type_prop {
-			Some(v) => match v.as_string_lit() {
-				Some(s) => (s.value.to_string(), ranged_to_range(&v, text)),
-				None => {
-					return Err(vec![Diagnostic {
-						range: logical_id_range,
-						severity: Some(DiagnosticSeverity::ERROR),
-						code: Some(NumberOrString::String(
-							"WA2_CFN_RESOURCE_TYPE_MISSING".into(),
-						)),
-						source: Some("wa2-lsp".into()),
-						message: format!(
-							"Template: resource `{logical_id}` is missing required `Type`."
-						),
-						..Default::default()
-					}]);
-				}
-			},
-			None => {
-				return Err(vec![Diagnostic {
-					range: logical_id_range,
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String(
-						"WA2_CFN_RESOURCE_TYPE_MISSING".into(),
-					)),
-					source: Some("wa2-lsp".into()),
-					message: format!(
-						"Template: resource `{logical_id}` is missing required `Type`."
-					),
-					..Default::default()
-				}]);
-			}
-		};
-
-		// Extract Properties (optional), with range
-		let properties = resource_obj
-			.get("Properties")
-			.and_then(|prop| prop.value.as_object())
-			.map(|obj| {
-				obj.properties
-					.iter()
-					.map(|prop| {
-						let k = prop.name.as_str();
-						let value = CfnValue::from_json_ast(&prop.value, text)?;
-						let value_range = value.range();
-
-						// Create key range - estimate based on value start position
-						let key_range = Range {
-							start: Position {
-								line: value_range.start.line,
-								character: value_range
-									.start
-									.character
-									.saturating_sub((k.len() + 4) as u32),
-							},
-							end: Position {
-								line: value_range.start.line,
-								character: value_range.start.character.saturating_sub(2),
-							},
-						};
-
-						Ok::<_, Vec<Diagnostic>>((k.to_string(), (value, key_range)))
-					})
-					.collect::<Result<HashMap<_, _>, Vec<Diagnostic>>>()
-			})
-			.transpose()?
-			.unwrap_or_default();
-
-		Ok(CfnResource {
-			logical_id,
-			resource_type: type_str,
-			properties,
-			logical_id_range,
-			type_range,
-		})
-	}
-}
-
-impl CfnParameter {
-	fn from_json_ast(
-		name: String,
-		node: &Value,
-		name_range: Range,
-		text: &str,
-		_uri: &Url,
-	) -> Result<Self, Vec<Diagnostic>> {
-		let param_obj = match node.as_object() {
-			Some(o) => o,
-			None => {
-				return Err(vec![Diagnostic {
-					range: ranged_to_range(node, text),
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String(
-						"WA2_CFN_PARAMETER_NOT_OBJECT".into(),
-					)),
-					source: Some("wa2-lsp".into()),
-					message: format!(
-						"Template: parameter `{name}` is not an object; \
-                         CloudFormation parameters must be objects with `Type`."
-					),
-					..Default::default()
-				}]);
-			}
-		};
-
-		// Extract Type (required)
-		let (type_str, type_range) = param_obj
-			.get("Type")
-			.and_then(|prop| {
-				prop.value
-					.as_string_lit()
-					.map(|s| (s.value.to_string(), ranged_to_range(&prop.value, text)))
-			})
-			.ok_or_else(|| {
-				vec![Diagnostic {
-					range: name_range,
-					severity: Some(DiagnosticSeverity::ERROR),
-					code: Some(NumberOrString::String(
-						"WA2_CFN_PARAMETER_TYPE_MISSING".into(),
-					)),
-					source: Some("wa2-lsp".into()),
-					message: format!("Template: parameter `{name}` is missing required `Type`."),
-					..Default::default()
-				}]
-			})?;
-
-		// Extract Default (optional)
-		let default_value = param_obj
-			.get("Default")
-			.map(|prop| CfnValue::from_json_ast(&prop.value, text))
-			.transpose()?;
-
-		// Extract Description (optional)
-		let description = param_obj
-			.get("Description")
-			.and_then(|prop| prop.value.as_string_lit().map(|s| s.value.to_string()));
-
-		Ok(CfnParameter {
-			name,
-			parameter_type: type_str,
-			default_value,
-			description,
-			name_range,
-			type_range,
-		})
-	}
-}
-
-impl CfnCondition {
-	fn from_json_ast(
-		name: String,
-		node: &Value,
-		name_range: Range,
-		text: &str,
-		_uri: &Url,
-	) -> Result<Self, Vec<Diagnostic>> {
-		// A condition is just a value expression
-		let expression = CfnValue::from_json_ast(node, text)?;
-
-		Ok(CfnCondition {
-			name,
-			expression,
-			name_range,
-		})
-	}
-}
-
-impl CfnValue {
-	fn from_json_ast(node: &Value, text: &str) -> Result<Self, Vec<Diagnostic>> {
-		// Default range for this node
-		let range = json_ast_to_range(node, text);
-
-		// Use as_string_lit(), as_number_lit(), as_boolean_lit()
-		if let Some(s) = node.as_string_lit() {
-			return Ok(CfnValue::String(s.value.to_string(), range));
-		}
-
-		if let Some(n) = node.as_number_lit() {
-			return Ok(CfnValue::Number(
-				n.value.parse::<f64>().unwrap_or(0.0),
-				range,
-			));
-		}
-
-		if let Some(b) = node.as_boolean_lit() {
-			return Ok(CfnValue::Bool(b.value, range));
-		}
-
-		// Check for null - try to match against known null patterns
-		// If none of the above matched and it's not array/object, assume null
-		if node.as_array().is_none() && node.as_object().is_none() {
-			return Ok(CfnValue::Null(range));
-		}
-
-		if let Some(arr) = node.as_array() {
-			let items: Result<Vec<_>, _> = arr
-				.elements
-				.iter()
-				.map(|item| CfnValue::from_json_ast(item, text))
-				.collect();
-			return Ok(CfnValue::Array(items?, range));
-		}
-
-		if let Some(obj) = node.as_object() {
-			// Intrinsic-detection: objects with a single key "Ref" or "Fn::GetAtt"
-			if obj.properties.len() == 1 {
-				let prop = &obj.properties[0];
-				let key = prop.name.clone().into_string();
-				let value = &prop.value;
-
-				// Check if this is a known intrinsic
-				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(&key) {
-					let inner_range = json_ast_to_range(value, text);
-
-					match intrinsic.kind {
-						IntrinsicKind::Ref => {
-							if let Some(s) = value.as_string_lit() {
-								return Ok(CfnValue::Ref {
-									target: s.value.to_string(),
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::GetAtt => {
-							// Array form: ["LogicalId", "Attribute"]
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 2
-								&& let (Some(target), Some(attribute)) = (
-									arr.elements[0].as_string_lit(),
-									arr.elements[1].as_string_lit(),
-								) {
-								return Ok(CfnValue::GetAtt {
-									target: target.value.to_string(),
-									attribute: attribute.value.to_string(),
-									range: inner_range,
-								});
-							}
-							// String form: "LogicalId.Attribute"
-							if let Some(s) = value.as_string_lit()
-								&& let Some((target, attribute)) = s.value.split_once('.')
-							{
-								return Ok(CfnValue::GetAtt {
-									target: target.to_string(),
-									attribute: attribute.to_string(),
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::Sub => {
-							// String form: {"Fn::Sub": "template"}
-							if let Some(s) = value.as_string_lit() {
-								return Ok(CfnValue::Sub {
-									template: s.value.to_string(),
-									variables: None,
-									range: inner_range,
-								});
-							}
-							// Array form: {"Fn::Sub": ["template", {vars}]}
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 2
-								&& let Some(template) = arr.elements[0].as_string_lit()
-							{
-								let variables = if arr.elements[1].as_object().is_some() {
-									CfnValue::from_json_ast(&arr.elements[1], text)?
-										.as_object_values() // ← Changed from as_object()
-								} else {
-									None
-								};
-								return Ok(CfnValue::Sub {
-									template: template.value.to_string(),
-									variables,
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::GetAZs => {
-							let region_value = CfnValue::from_json_ast(value, text)?;
-							return Ok(CfnValue::GetAZs {
-								region: Box::new(region_value),
-								range: inner_range,
-							});
-						}
-						IntrinsicKind::Join => {
-							// Join: {"Fn::Join": [delimiter, [values]]}
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 2
-								&& let Some(delimiter) = arr.elements[0].as_string_lit()
-							{
-								let values_node = &arr.elements[1];
-								let values_cfn = CfnValue::from_json_ast(values_node, text)?;
-
-								let values = match values_cfn {
-									CfnValue::Array(items, _) => items,
-									_ => {
-										return Err(vec![Diagnostic {
-                    range: json_ast_to_range(values_node, text),
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: Some(NumberOrString::String("WA2_CFN_MALFORMED_JOIN".into())),
-                    source: Some("wa2-lsp".into()),
-                    message: "Malformed Fn::Join: second argument must be an array of values".to_string(),
-                    ..Default::default()
-                }]);
-									}
-								};
-
-								return Ok(CfnValue::Join {
-									delimiter: delimiter.value.to_string(),
-									values,
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::Select => {
-							// Select: {"Fn::Select": [index, list]}
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 2
-							{
-								let index_value = CfnValue::from_json_ast(&arr.elements[0], text)?;
-								let list_value = CfnValue::from_json_ast(&arr.elements[1], text)?;
-
-								return Ok(CfnValue::Select {
-									index: Box::new(index_value),
-									list: Box::new(list_value),
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::If => {
-							// If: {"Fn::If": [condition_name, value_if_true, value_if_false]}
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 3
-								&& let Some(condition_name) = arr.elements[0].as_string_lit()
-							{
-								let value_if_true =
-									CfnValue::from_json_ast(&arr.elements[1], text)?;
-								let value_if_false =
-									CfnValue::from_json_ast(&arr.elements[2], text)?;
-
-								return Ok(CfnValue::If {
-									condition_name: condition_name.value.to_string(),
-									value_if_true: Box::new(value_if_true),
-									value_if_false: Box::new(value_if_false),
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::Equals => {
-							// Equals: {"Fn::Equals": [value1, value2]}
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 2
-							{
-								let left = CfnValue::from_json_ast(&arr.elements[0], text)?;
-								let right = CfnValue::from_json_ast(&arr.elements[1], text)?;
-
-								return Ok(CfnValue::Equals {
-									left: Box::new(left),
-									right: Box::new(right),
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::Not => {
-							// Not: {"Fn::Not": [condition]}
-							if let Some(arr) = value.as_array()
-								&& arr.elements.len() == 1
-							{
-								let condition = CfnValue::from_json_ast(&arr.elements[0], text)?;
-
-								return Ok(CfnValue::Not {
-									condition: Box::new(condition),
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::And => {
-							// And: {"Fn::And": [condition1, condition2, ...]}
-							if let Some(arr) = value.as_array() {
-								if arr.elements.len() < 2 || arr.elements.len() > 10 {
-									return Err(vec![Diagnostic {
-										range: inner_range,
-										severity: Some(DiagnosticSeverity::ERROR),
-										code: Some(NumberOrString::String(
-											"WA2_CFN_MALFORMED_AND".into(),
-										)),
-										source: Some("wa2-lsp".into()),
-										message: format!(
-											"Malformed Fn::And: expected 2-10 conditions, got {}",
-											arr.elements.len()
-										),
-										..Default::default()
-									}]);
-								}
-
-								let conditions: Result<Vec<_>, _> = arr
-									.elements
-									.iter()
-									.map(|elem| CfnValue::from_json_ast(elem, text))
-									.collect();
-
-								return Ok(CfnValue::And {
-									conditions: conditions?,
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::Or => {
-							// Or: {"Fn::Or": [condition1, condition2, ...]}
-							if let Some(arr) = value.as_array() {
-								if arr.elements.len() < 2 || arr.elements.len() > 10 {
-									return Err(vec![Diagnostic {
-										range: inner_range,
-										severity: Some(DiagnosticSeverity::ERROR),
-										code: Some(NumberOrString::String(
-											"WA2_CFN_MALFORMED_OR".into(),
-										)),
-										source: Some("wa2-lsp".into()),
-										message: format!(
-											"Malformed Fn::Or: expected 2-10 conditions, got {}",
-											arr.elements.len()
-										),
-										..Default::default()
-									}]);
-								}
-
-								let conditions: Result<Vec<_>, _> = arr
-									.elements
-									.iter()
-									.map(|elem| CfnValue::from_json_ast(elem, text))
-									.collect();
-
-								return Ok(CfnValue::Or {
-									conditions: conditions?,
-									range: inner_range,
-								});
-							}
-						}
-						IntrinsicKind::Condition => {
-							// Condition: {"Condition": "ConditionName"}
-							if let Some(s) = value.as_string_lit() {
-								return Ok(CfnValue::Condition {
-									condition_name: s.value.to_string(),
-									range: inner_range,
-								});
-							}
-						}
-					}
-				}
-			}
-
-			// Fallback: plain object → CfnValue::Object
-			let mut map = HashMap::new();
-			for prop in &obj.properties {
-				let key = prop.name.as_str().to_string();
-				let value = CfnValue::from_json_ast(&prop.value, text)?;
-
-				// Calculate key range for this property
-				let value_range = value.range();
-				let key_range = Range {
-					start: Position {
-						line: value_range.start.line,
-						character: value_range
-							.start
-							.character
-							.saturating_sub((key.len() + 4) as u32),
-					},
-					end: Position {
-						line: value_range.start.line,
-						character: value_range.start.character.saturating_sub(2),
-					},
-				};
-
-				map.insert(key, (value, key_range)); // ← Store tuple
-			}
-			return Ok(CfnValue::Object(map, range));
-		}
-
-		// Fallback - treat as null
-		Ok(CfnValue::Null(range))
-	}
-}
-
-/// Convert byte offset to line/column position
-fn byte_offset_to_position(text: &str, offset: usize) -> Position {
-	let mut line = 0u32;
-	let mut character = 0u32;
-
-	for (byte_idx, ch) in text.char_indices() {
-		if byte_idx >= offset {
-			break;
-		}
-		if ch == '\n' {
-			line += 1;
-			character = 0;
-		} else {
-			character += 1;
-		}
-	}
-
-	Position { line, character }
-}
-
-/// Convert anything with a range to an LSP Range
-fn ranged_to_range<T: Ranged>(node: &T, text: &str) -> Range {
-	let json_range = node.range();
-
-	Range {
-		start: byte_offset_to_position(text, json_range.start),
-		end: byte_offset_to_position(text, json_range.end),
-	}
-}
-
-/// Convert a jsonc-parser AST Value to an LSP Range
-fn json_ast_to_range(node: &Value, text: &str) -> Range {
-	ranged_to_range(node, text)
 }
 
 /// Convert a jsonc-parser error to an LSP diagnostic
@@ -785,5 +73,160 @@ fn json_error_to_diagnostic(err: ParseError, uri: &Url) -> Diagnostic {
 		source: Some("wa2-lsp".into()),
 		message: format!("JSON parse error in {uri}: {}", err),
 		..Default::default()
+	}
+}
+
+/// JSON parser implementation
+pub struct JsonCfnParser<'a> {
+	text: &'a str,
+}
+
+impl<'a> JsonCfnParser<'a> {
+	pub fn new(text: &'a str) -> Self {
+		Self { text }
+	}
+}
+
+impl<'a> CfnParser for JsonCfnParser<'a> {
+	type Node = Value<'a>;
+
+	fn node_as_string(&self, node: &Self::Node) -> Option<String> {
+		node.as_string_lit().map(|s| s.value.to_string())
+	}
+
+	fn node_as_number(&self, node: &Self::Node) -> Option<f64> {
+		node.as_number_lit()
+			.and_then(|n| n.value.parse::<f64>().ok())
+	}
+
+	fn node_as_bool(&self, node: &Self::Node) -> Option<bool> {
+		node.as_boolean_lit().map(|b| b.value)
+	}
+
+	fn node_is_null(&self, node: &Self::Node) -> bool {
+		// JSON null: check if it's not string/number/bool/array/object
+		node.as_string_lit().is_none()
+			&& node.as_number_lit().is_none()
+			&& node.as_boolean_lit().is_none()
+			&& node.as_array().is_none()
+			&& node.as_object().is_none()
+	}
+
+	fn array_len(&self, node: &Self::Node) -> Option<usize> {
+		node.as_array().map(|arr| arr.elements.len())
+	}
+
+	fn array_get(&self, node: &Self::Node, index: usize) -> Option<Self::Node> {
+		node.as_array()
+			.and_then(|arr| arr.elements.get(index))
+			.cloned()
+	}
+
+	fn object_entries(&self, node: &Self::Node) -> Option<Vec<(String, Self::Node)>> {
+		node.as_object().map(|obj| {
+			obj.properties
+				.iter()
+				.map(|prop| {
+					let key = prop.name.as_str().to_string();
+					let value = prop.value.clone();
+					(key, value)
+				})
+				.collect()
+		})
+	}
+
+	fn object_get(&self, node: &Self::Node, key: &str) -> Option<Self::Node> {
+		node.as_object()
+			.and_then(|obj| obj.get(key))
+			.map(|prop| prop.value.clone())
+	}
+
+	fn node_range(&self, node: &Self::Node) -> Range {
+		let json_range = node.range();
+
+		Range {
+			start: self.byte_offset_to_position(json_range.start),
+			end: self.byte_offset_to_position(json_range.end),
+		}
+	}
+
+	fn object_entries_with_invalid_keys(
+		&self,
+		node: &Self::Node,
+	) -> Option<Vec<(Option<String>, Self::Node)>> {
+		// JSON keys are always strings, so this is the same as object_entries
+		self.object_entries(node).map(|entries| {
+			entries
+				.into_iter()
+				.map(|(key, node)| (Some(key), node))
+				.collect()
+		})
+	}
+
+	fn detect_intrinsic(&self, node: &Self::Node) -> Option<(IntrinsicKind, Self::Node)> {
+		// JSON only has long-form like {"Ref": "MyBucket"}
+		if let Some(entries) = self.object_entries(node)
+			&& entries.len() == 1
+		{
+			let (key, value_node) = &entries[0];
+			if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
+				return Some((intrinsic.kind, value_node.clone()));
+			}
+		}
+
+		None
+	}
+
+	fn object_entries_with_ranges(
+		&self,
+		node: &Self::Node,
+	) -> Option<Vec<ObjectEntry<Self::Node>>> {
+		node.as_object().map(|obj| {
+			obj.properties
+				.iter()
+				.map(|prop| {
+					let key = Some(prop.name.as_str().to_string());
+					let value = prop.value.clone();
+					// Get key range using ranged_to_range on the name
+					let key_range = self.ranged_to_range(&prop.name);
+					(key, value, key_range)
+				})
+				.collect()
+		})
+	}
+
+	fn get_section(&self, root: &Self::Node, section_name: &str) -> Option<Self::Node> {
+		self.object_get(root, section_name)
+	}
+}
+
+impl<'a> JsonCfnParser<'a> {
+	/// Convert byte offset to line/column position
+	fn byte_offset_to_position(&self, offset: usize) -> tower_lsp::lsp_types::Position {
+		let mut line = 0u32;
+		let mut character = 0u32;
+
+		for (byte_idx, ch) in self.text.char_indices() {
+			if byte_idx >= offset {
+				break;
+			}
+			if ch == '\n' {
+				line += 1;
+				character = 0;
+			} else {
+				character += 1;
+			}
+		}
+
+		tower_lsp::lsp_types::Position { line, character }
+	}
+
+	/// Helper to convert anything with a range to an LSP Range
+	fn ranged_to_range<T: Ranged>(&self, item: &T) -> Range {
+		let json_range = item.range();
+		Range {
+			start: self.byte_offset_to_position(json_range.start),
+			end: self.byte_offset_to_position(json_range.end),
+		}
 	}
 }

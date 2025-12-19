@@ -79,8 +79,8 @@ impl SymbolTable {
 		// Add conditions
 		let conditions = template
 			.conditions
-			.iter()
-			.map(|(name, _)| (name.clone(), ConditionEntry { name: name.clone() }))
+			.keys()
+			.map(|name| (name.clone(), ConditionEntry { name: name.clone() }))
 			.collect();
 
 		// Add pseudo-parameters (always available)

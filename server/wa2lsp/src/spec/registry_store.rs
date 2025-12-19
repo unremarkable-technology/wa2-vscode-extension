@@ -393,42 +393,42 @@ where
 
 #[test]
 fn verify_ec2_instance_oneof_captured() {
-    use std::fs;
-    
-    let cache_dir = dirs::cache_dir().unwrap().join("wa2/cfn-spec");
-    let ec2_schema = cache_dir.join("aws-ec2-instance.json");
-    let content = fs::read_to_string(&ec2_schema).expect("Can read EC2 schema");
-    
-    // Parse the schema
-    let parsed = parse_resource_schema("aws-ec2-instance.json", &content)
-        .expect("Should parse")
-        .expect("Should return descriptor");
-    
-    eprintln!("\n=== EC2::Instance Resource ===");
-    
-    // Check LaunchTemplate property
-    let lt_prop_name = crate::spec::spec_store::PropertyName("LaunchTemplate".to_string());
-    if let Some(lt_prop) = parsed.properties.get(&lt_prop_name) {
-        eprintln!("\nLaunchTemplate property found:");
-        eprintln!("  Type: {:?}", lt_prop.type_info);
-        eprintln!("  OneOf: {:?}", lt_prop.one_of_required);
-        eprintln!("  AnyOf: {:?}", lt_prop.any_of_required);
-        
-        // Verify oneOf was captured
-        assert!(
-            lt_prop.one_of_required.is_some(),
-            "LaunchTemplate should have oneOf constraint"
-        );
-        
-        let one_of = lt_prop.one_of_required.as_ref().unwrap();
-        eprintln!("\n  OneOf constraints:");
-        for (i, constraint_set) in one_of.iter().enumerate() {
-            eprintln!("    Option {}: {:?}", i + 1, constraint_set);
-        }
-        
-        // Should have 2 options
-        assert_eq!(one_of.len(), 2, "Should have 2 oneOf options");
-    } else {
-        panic!("LaunchTemplate property not found!");
-    }
+	use std::fs;
+
+	let cache_dir = dirs::cache_dir().unwrap().join("wa2/cfn-spec");
+	let ec2_schema = cache_dir.join("aws-ec2-instance.json");
+	let content = fs::read_to_string(&ec2_schema).expect("Can read EC2 schema");
+
+	// Parse the schema
+	let parsed = parse_resource_schema("aws-ec2-instance.json", &content)
+		.expect("Should parse")
+		.expect("Should return descriptor");
+
+	eprintln!("\n=== EC2::Instance Resource ===");
+
+	// Check LaunchTemplate property
+	let lt_prop_name = crate::spec::spec_store::PropertyName("LaunchTemplate".to_string());
+	if let Some(lt_prop) = parsed.properties.get(&lt_prop_name) {
+		eprintln!("\nLaunchTemplate property found:");
+		eprintln!("  Type: {:?}", lt_prop.type_info);
+		eprintln!("  OneOf: {:?}", lt_prop.one_of_required);
+		eprintln!("  AnyOf: {:?}", lt_prop.any_of_required);
+
+		// Verify oneOf was captured
+		assert!(
+			lt_prop.one_of_required.is_some(),
+			"LaunchTemplate should have oneOf constraint"
+		);
+
+		let one_of = lt_prop.one_of_required.as_ref().unwrap();
+		eprintln!("\n  OneOf constraints:");
+		for (i, constraint_set) in one_of.iter().enumerate() {
+			eprintln!("    Option {}: {:?}", i + 1, constraint_set);
+		}
+
+		// Should have 2 options
+		assert_eq!(one_of.len(), 2, "Should have 2 oneOf options");
+	} else {
+		panic!("LaunchTemplate property not found!");
+	}
 }
