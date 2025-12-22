@@ -18,3 +18,8 @@ flate2 = "1.1.5"
 saphyr = "0.0.6"
 jsonc-parser = "0.28"
 zip = "6.0.0"
+datatest-stable = "0.3.3"
+
+[[test]]
+name = "fixtures"
+harness = false

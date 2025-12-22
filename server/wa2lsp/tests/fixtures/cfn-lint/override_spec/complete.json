@@ -1,0 +1,18 @@
+{
+  "ExcludeResourceTypes": [
+    "AWS::EC2::SpotFleet"
+  ],
+  "IncludeResourceTypes": [
+    "AWS::EC2::*",
+    "AWS::S3::*"
+  ],
+  "Patches": {
+    "AWS::S3::Bucket": [
+      {
+        "op": "add",
+        "path": "/required",
+        "value": ["BucketName"]
+      }
+    ]
+  }
+}

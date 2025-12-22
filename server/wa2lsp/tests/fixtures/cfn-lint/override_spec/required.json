@@ -1,0 +1,11 @@
+{
+  "Patches": {
+    "AWS::S3::Bucket": [
+      {
+        "op": "add",
+        "path": "/required",
+        "value": ["BucketName"]
+      }
+    ]
+  }
+}
