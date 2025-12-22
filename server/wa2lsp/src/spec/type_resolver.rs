@@ -155,6 +155,39 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 			// Return None since they don't produce usable property values
 			None
 		}
+
+		CfnValue::Base64 { .. } => {
+			// Base64 always returns String
+			Some(TypeInfo {
+				kind: ShapeKind::Primitive(PrimitiveType::String),
+				collection: CollectionKind::Scalar,
+			})
+		}
+
+		CfnValue::Split { .. } => {
+			// Split always returns List<String>
+			Some(TypeInfo {
+				kind: ShapeKind::Primitive(PrimitiveType::String),
+				collection: CollectionKind::List,
+			})
+		}
+
+		CfnValue::Cidr { .. } => {
+			// Cidr always returns List<String> (list of CIDR blocks)
+			Some(TypeInfo {
+				kind: ShapeKind::Primitive(PrimitiveType::String),
+				collection: CollectionKind::List,
+			})
+		}
+
+		CfnValue::ImportValue { .. } => {
+			// ImportValue can return any type depending on the export
+			// Without knowing the export schema, return Any
+			Some(TypeInfo {
+				kind: ShapeKind::Any,
+				collection: CollectionKind::Scalar,
+			})
+		}
 	}
 }
 

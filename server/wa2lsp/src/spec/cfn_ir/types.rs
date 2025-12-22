@@ -54,7 +54,6 @@ pub enum CfnValue {
 	Bool(bool, Range),
 	Null(Range),
 	Array(Vec<CfnValue>, Range),
-	//Object(HashMap<String, CfnValue>, Range),
 	Object(HashMap<String, (CfnValue, Range)>, Range),
 
 	/// !Ref / { "Ref": "LogicalId" }
@@ -138,6 +137,26 @@ pub enum CfnValue {
 		condition_name: String,
 		range: Range,
 	},
+
+	Base64 {
+		value: Box<CfnValue>,
+		range: Range,
+	},
+	Split {
+		delimiter: String,
+		source: Box<CfnValue>,
+		range: Range,
+	},
+	Cidr {
+		ip_block: Box<CfnValue>,
+		count: Box<CfnValue>,
+		cidr_bits: Box<CfnValue>,
+		range: Range,
+	},
+	ImportValue {
+		name: Box<CfnValue>,
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -162,6 +181,10 @@ impl CfnValue {
 			CfnValue::And { range, .. } => *range,
 			CfnValue::Or { range, .. } => *range,
 			CfnValue::Condition { range, .. } => *range,
+			CfnValue::Base64 { range, .. } => *range,
+			CfnValue::Split { range, .. } => *range,
+			CfnValue::Cidr { range, .. } => *range,
+			CfnValue::ImportValue { range, .. } => *range,
 		}
 	}
 

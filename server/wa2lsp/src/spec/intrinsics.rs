@@ -15,6 +15,10 @@ pub enum IntrinsicKind {
 	And,
 	Or,
 	Condition,
+	Base64,
+	Split,
+	Cidr,
+	ImportValue,
 }
 
 /// Definition of an intrinsic function
@@ -86,6 +90,26 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::Condition,
 		yaml_tag: "Condition",
 		json_key: "Condition",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Base64,
+		json_key: "Fn::Base64",
+		yaml_tag: "Base64",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Split,
+		json_key: "Fn::Split",
+		yaml_tag: "Split",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Cidr,
+		json_key: "Fn::Cidr",
+		yaml_tag: "Cidr",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::ImportValue,
+		json_key: "Fn::ImportValue",
+		yaml_tag: "ImportValue",
 	},
 ];
 

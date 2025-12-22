@@ -542,6 +542,10 @@ fn parse_intrinsic<P: CfnParser>(
 		IntrinsicKind::And => parse_and(parser, node, range),
 		IntrinsicKind::Or => parse_or(parser, node, range),
 		IntrinsicKind::Condition => parse_condition_intrinsic(parser, node, range),
+		IntrinsicKind::Base64 => parse_base64(parser, node, range),
+		IntrinsicKind::Split => parse_split(parser, node, range),
+		IntrinsicKind::Cidr => parse_cidr(parser, node, range),
+		IntrinsicKind::ImportValue => parse_import_value(parser, node, range),
 	}
 }
 
@@ -637,6 +641,77 @@ fn parse_condition_intrinsic<P: CfnParser>(
 		"WA2_CFN_MALFORMED_CONDITION",
 		"Malformed !Condition: expected condition name string".to_string(),
 	))
+}
+
+fn parse_base64<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
+	let value = parse_value(parser, node)?;
+	Ok(CfnValue::Base64 {
+		value: Box::new(value),
+		range,
+	})
+}
+
+fn parse_split<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
+	// Split: [delimiter, source_string]
+	if let Some(len) = parser.array_len(node)
+		&& len == 2
+		&& let (Some(delim_node), Some(source_node)) =
+			(parser.array_get(node, 0), parser.array_get(node, 1))
+		&& let Some(delimiter) = parser.node_as_string(&delim_node)
+	{
+		let source = parse_value(parser, &source_node)?;
+		return Ok(CfnValue::Split {
+			delimiter,
+			source: Box::new(source),
+			range,
+		});
+	}
+
+	Err(make_diagnostic(
+		range,
+		"WA2_CFN_MALFORMED_SPLIT",
+		"Malformed !Split: expected array [delimiter, source_string]".to_string(),
+	))
+}
+
+fn parse_cidr<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
+	// Cidr: [ipBlock, count, cidrBits]
+	if let Some(len) = parser.array_len(node)
+		&& len == 3
+		&& let (Some(ip_node), Some(count_node), Some(bits_node)) = (
+			parser.array_get(node, 0),
+			parser.array_get(node, 1),
+			parser.array_get(node, 2),
+		) {
+		let ip_block = parse_value(parser, &ip_node)?;
+		let count = parse_value(parser, &count_node)?;
+		let cidr_bits = parse_value(parser, &bits_node)?;
+
+		return Ok(CfnValue::Cidr {
+			ip_block: Box::new(ip_block),
+			count: Box::new(count),
+			cidr_bits: Box::new(cidr_bits),
+			range,
+		});
+	}
+
+	Err(make_diagnostic(
+		range,
+		"WA2_CFN_MALFORMED_CIDR",
+		"Malformed !Cidr: expected array [ipBlock, count, cidrBits]".to_string(),
+	))
+}
+
+fn parse_import_value<P: CfnParser>(
+	parser: &P,
+	node: &P::Node,
+	range: Range,
+) -> ParseResult<CfnValue> {
+	let name = parse_value(parser, node)?;
+	Ok(CfnValue::ImportValue {
+		name: Box::new(name),
+		range,
+	})
 }
 
 fn parse_join<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {

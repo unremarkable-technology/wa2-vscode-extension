@@ -828,6 +828,25 @@ impl CfnTemplate {
 					});
 				}
 			}
+			CfnValue::Base64 { value, .. } => {
+				Self::validate_intrinsics(value, symbols, diagnostics, spec);
+			}
+			CfnValue::Split { source, .. } => {
+				Self::validate_intrinsics(source, symbols, diagnostics, spec);
+			}
+			CfnValue::Cidr {
+				ip_block,
+				count,
+				cidr_bits,
+				..
+			} => {
+				Self::validate_intrinsics(ip_block, symbols, diagnostics, spec);
+				Self::validate_intrinsics(count, symbols, diagnostics, spec);
+				Self::validate_intrinsics(cidr_bits, symbols, diagnostics, spec);
+			}
+			CfnValue::ImportValue { name, .. } => {
+				Self::validate_intrinsics(name, symbols, diagnostics, spec);
+			}
 			CfnValue::Array(items, _) => {
 				for item in items {
 					Self::validate_intrinsics(item, symbols, diagnostics, spec); // Pass spec

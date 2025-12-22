@@ -1676,3 +1676,434 @@ Resources:
 		diagnostics
 	);
 }
+
+// ===== Base64 Tests =====
+
+#[test]
+fn yaml_base64_string_form() {
+	let text = r#"
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData: !Base64 "hello world"
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let instance = &template.resources["MyInstance"];
+	let user_data = instance.properties.get("UserData").unwrap();
+
+	match user_data {
+		(CfnValue::Base64 { value, .. }, _) => {
+			assert!(matches!(**value, CfnValue::String(ref s, _) if s == "hello world"));
+		}
+		other => panic!("expected Base64 CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_base64_with_sub() {
+	let text = r#"
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          echo Region: ${AWS::Region}
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let instance = &template.resources["MyInstance"];
+	let user_data = instance.properties.get("UserData").unwrap();
+
+	match user_data {
+		(CfnValue::Base64 { value, .. }, _) => {
+			assert!(matches!(**value, CfnValue::Sub { .. }));
+		}
+		other => panic!("expected Base64 with Sub, got {:?}", other),
+	}
+}
+
+#[test]
+fn json_base64() {
+	let text = r#"{
+  "Resources": {
+    "MyInstance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "UserData": {
+          "Fn::Base64": "echo hello"
+        }
+      }
+    }
+  }
+}"#;
+
+	let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+	let instance = &template.resources["MyInstance"];
+	let user_data = instance.properties.get("UserData").unwrap();
+
+	match user_data {
+		(CfnValue::Base64 { value, .. }, _) => {
+			assert!(matches!(**value, CfnValue::String(ref s, _) if s == "echo hello"));
+		}
+		other => panic!("expected Base64 CfnValue, got {:?}", other),
+	}
+}
+
+// ===== Split Tests =====
+
+#[test]
+fn yaml_split_basic() {
+	let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags: !Split [",", "Key1,Key2,Key3"]
+      BucketEncryption: enabled
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let bucket = &template.resources["MyBucket"];
+	let tags = bucket.properties.get("Tags").unwrap();
+
+	match tags {
+		(
+			CfnValue::Split {
+				delimiter, source, ..
+			},
+			_,
+		) => {
+			assert_eq!(delimiter, ",");
+			assert!(matches!(**source, CfnValue::String(ref s, _) if s == "Key1,Key2,Key3"));
+		}
+		other => panic!("expected Split CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_split_with_ref() {
+	let text = r#"
+Parameters:
+  CommaSeparatedList:
+    Type: String
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags: !Split [",", !Ref CommaSeparatedList]
+      BucketEncryption: enabled
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let bucket = &template.resources["MyBucket"];
+	let tags = bucket.properties.get("Tags").unwrap();
+
+	match tags {
+		(
+			CfnValue::Split {
+				delimiter, source, ..
+			},
+			_,
+		) => {
+			assert_eq!(delimiter, ",");
+			assert!(
+				matches!(&**source, CfnValue::Ref { target, .. } if target == "CommaSeparatedList")
+			);
+		}
+		other => panic!("expected Split with Ref, got {:?}", other),
+	}
+}
+
+#[test]
+fn json_split() {
+	let text = r#"{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "Tags": {
+          "Fn::Split": [",", "Key1,Key2,Key3"]
+        }
+      }
+    }
+  }
+}"#;
+
+	let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+	let bucket = &template.resources["MyBucket"];
+	let tags = bucket.properties.get("Tags").unwrap();
+
+	match tags {
+		(
+			CfnValue::Split {
+				delimiter, source, ..
+			},
+			_,
+		) => {
+			assert_eq!(delimiter, ",");
+			assert!(matches!(**source, CfnValue::String(ref s, _) if s == "Key1,Key2,Key3"));
+		}
+		other => panic!("expected Split CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_split_malformed_wrong_arg_count() {
+	let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags: !Split [","]
+      BucketEncryption: enabled
+"#;
+
+	let result = CfnTemplate::from_yaml(text, &test_uri());
+	assert!(result.is_err());
+	let diags = result.unwrap_err();
+	assert!(diags.iter().any(|d| d.message.contains("Malformed !Split")));
+}
+
+// ===== Cidr Tests =====
+
+#[test]
+fn yaml_cidr_basic() {
+	let text = r#"
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Select [0, !Cidr ["10.0.0.0/16", 6, 8]]
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let vpc = &template.resources["MyVPC"];
+	let cidr = vpc.properties.get("CidrBlock").unwrap();
+
+	match cidr {
+		(CfnValue::Select { list, .. }, _) => {
+			if let CfnValue::Cidr {
+				ip_block,
+				count,
+				cidr_bits,
+				..
+			} = &**list
+			{
+				assert!(matches!(**ip_block, CfnValue::String(ref s, _) if s == "10.0.0.0/16"));
+				assert!(matches!(**count, CfnValue::Number(n, _) if n == 6.0));
+				assert!(matches!(**cidr_bits, CfnValue::Number(n, _) if n == 8.0));
+			} else {
+				panic!("expected Cidr inside Select");
+			}
+		}
+		other => panic!("expected Select with Cidr, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_cidr_with_getatt() {
+	let text = r#"
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+  MySubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Select [0, !Cidr [!GetAtt MyVPC.CidrBlock, 4, 8]]
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let subnet = &template.resources["MySubnet"];
+	let cidr = subnet.properties.get("CidrBlock").unwrap();
+
+	match cidr {
+		(CfnValue::Select { list, .. }, _) => {
+			if let CfnValue::Cidr { ip_block, .. } = &**list {
+				assert!(matches!(**ip_block, CfnValue::GetAtt { .. }));
+			} else {
+				panic!("expected Cidr inside Select");
+			}
+		}
+		other => panic!("expected Select with Cidr, got {:?}", other),
+	}
+}
+
+#[test]
+fn json_cidr() {
+	let text = r#"{
+  "Resources": {
+    "MyVPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": {
+          "Fn::Select": [
+            0,
+            {"Fn::Cidr": ["10.0.0.0/16", 6, 8]}
+          ]
+        }
+      }
+    }
+  }
+}"#;
+
+	let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+	let vpc = &template.resources["MyVPC"];
+	let cidr = vpc.properties.get("CidrBlock").unwrap();
+
+	match cidr {
+		(CfnValue::Select { list, .. }, _) => {
+			assert!(matches!(**list, CfnValue::Cidr { .. }));
+		}
+		other => panic!("expected Select with Cidr, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_cidr_malformed_wrong_arg_count() {
+	let text = r#"
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Cidr ["10.0.0.0/16", 6]
+"#;
+
+	let result = CfnTemplate::from_yaml(text, &test_uri());
+	assert!(result.is_err());
+	let diags = result.unwrap_err();
+	assert!(diags.iter().any(|d| d.message.contains("Malformed !Cidr")));
+}
+
+// ===== ImportValue Tests =====
+
+#[test]
+fn yaml_import_value_string() {
+	let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !ImportValue "shared-bucket-name"
+      BucketEncryption: enabled
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let bucket = &template.resources["MyBucket"];
+	let bucket_name = bucket.properties.get("BucketName").unwrap();
+
+	match bucket_name {
+		(CfnValue::ImportValue { name, .. }, _) => {
+			assert!(matches!(**name, CfnValue::String(ref s, _) if s == "shared-bucket-name"));
+		}
+		other => panic!("expected ImportValue CfnValue, got {:?}", other),
+	}
+}
+
+#[test]
+fn yaml_import_value_with_sub() {
+	let text = r#"
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !ImportValue
+        Fn::Sub: "${NetworkStackName}-BucketName"
+      BucketEncryption: enabled
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let bucket = &template.resources["MyBucket"];
+	let bucket_name = bucket.properties.get("BucketName").unwrap();
+
+	match bucket_name {
+		(CfnValue::ImportValue { name, .. }, _) => {
+			assert!(matches!(**name, CfnValue::Sub { .. }));
+		}
+		other => panic!("expected ImportValue with Sub, got {:?}", other),
+	}
+}
+
+#[test]
+fn json_import_value() {
+	let text = r#"{
+  "Resources": {
+    "MyBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": {
+          "Fn::ImportValue": "shared-bucket-name"
+        }
+      }
+    }
+  }
+}"#;
+
+	let template = CfnTemplate::from_json(text, &test_uri()).unwrap();
+	let bucket = &template.resources["MyBucket"];
+	let bucket_name = bucket.properties.get("BucketName").unwrap();
+
+	match bucket_name {
+		(CfnValue::ImportValue { name, .. }, _) => {
+			assert!(matches!(**name, CfnValue::String(ref s, _) if s == "shared-bucket-name"));
+		}
+		other => panic!("expected ImportValue CfnValue, got {:?}", other),
+	}
+}
+
+// ===== Combined/Integration Tests =====
+
+#[test]
+fn test_complex_nesting_with_new_intrinsics() {
+	let text = r#"
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      # Base64 wrapping Sub
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          REGION=${AWS::Region}
+      # Split a comma-delimited list
+      SecurityGroups: !Split [",", !ImportValue "shared-security-groups"]
+      # Cidr for subnet calculation
+      SubnetId: !Select [0, !Cidr [!GetAtt MyVPC.CidrBlock, 3, 8]]
+"#;
+
+	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
+	let instance = &template.resources["MyInstance"];
+
+	// Verify all three new intrinsics are parsed correctly
+	assert!(instance.properties.contains_key("UserData"));
+	assert!(instance.properties.contains_key("SecurityGroups"));
+	assert!(instance.properties.contains_key("SubnetId"));
+
+	// UserData should be Base64
+	match &instance.properties["UserData"] {
+		(CfnValue::Base64 { .. }, _) => {}
+		other => panic!("expected Base64, got {:?}", other),
+	}
+
+	// SecurityGroups should be Split with ImportValue
+	match &instance.properties["SecurityGroups"] {
+		(CfnValue::Split { source, .. }, _) => {
+			assert!(matches!(**source, CfnValue::ImportValue { .. }));
+		}
+		other => panic!("expected Split with ImportValue, got {:?}", other),
+	}
+
+	// SubnetId should be Select with Cidr
+	match &instance.properties["SubnetId"] {
+		(CfnValue::Select { list, .. }, _) => {
+			assert!(matches!(**list, CfnValue::Cidr { .. }));
+		}
+		other => panic!("expected Select with Cidr, got {:?}", other),
+	}
+}

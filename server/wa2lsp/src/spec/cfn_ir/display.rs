@@ -120,7 +120,6 @@ impl fmt::Display for CfnValue {
 				}
 				write!(f, "]")
 			}
-
 			CfnValue::Or { conditions, .. } => {
 				write!(f, "!Or [")?;
 				for (i, cond) in conditions.iter().enumerate() {
@@ -133,6 +132,25 @@ impl fmt::Display for CfnValue {
 			}
 			CfnValue::Condition { condition_name, .. } => {
 				write!(f, "!Condition {}", condition_name)
+			}
+			CfnValue::Base64 { value, .. } => {
+				write!(f, "!Base64 {}", value)
+			}
+			CfnValue::Split {
+				delimiter, source, ..
+			} => {
+				write!(f, "!Split [\"{}\", {}]", delimiter, source)
+			}
+			CfnValue::Cidr {
+				ip_block,
+				count,
+				cidr_bits,
+				..
+			} => {
+				write!(f, "!Cidr [{}, {}, {}]", ip_block, count, cidr_bits)
+			}
+			CfnValue::ImportValue { name, .. } => {
+				write!(f, "!ImportValue {}", name)
 			}
 			CfnValue::Array(items, _) => {
 				write!(f, "[")?;
