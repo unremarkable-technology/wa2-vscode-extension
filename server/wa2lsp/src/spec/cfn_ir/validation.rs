@@ -53,20 +53,50 @@ impl CfnTemplate {
 		// Validate each resource
 		for (logical_id, resource) in &self.resources {
 			let type_id = ResourceTypeId(resource.resource_type.clone());
+			let type_str = &resource.resource_type;
+
+			// Skip validation for SAM/Serverless resources (transform-based)
+			if type_str.starts_with("AWS::Serverless::") || type_str.starts_with("AWS::SAM::") {
+				continue;
+			}
 
 			// Check if resource type exists in spec
 			if !spec_store.resource_types.contains_key(&type_id) {
+				// Determine severity based on resource type pattern
+				let (severity, message) = if type_str.starts_with("Custom::") {
+					(
+						DiagnosticSeverity::WARNING,
+						format!(
+							"Custom resource type `{}` cannot be validated (in resource `{}`)",
+							type_str, logical_id
+						),
+					)
+				} else if type_str.ends_with("::MODULE") {
+					(
+						DiagnosticSeverity::WARNING,
+						format!(
+							"Module resource type `{}` cannot be validated (in resource `{}`)",
+							type_str, logical_id
+						),
+					)
+				} else {
+					(
+						DiagnosticSeverity::ERROR,
+						format!(
+							"Unknown CloudFormation resource type: {} (in resource `{}`)",
+							type_str, logical_id
+						),
+					)
+				};
+
 				diagnostics.push(Diagnostic {
 					range: resource.type_range,
-					severity: Some(DiagnosticSeverity::ERROR),
+					severity: Some(severity),
 					code: Some(NumberOrString::String(
 						"WA2_CFN_UNKNOWN_RESOURCE_TYPE".into(),
 					)),
 					source: Some("wa2-lsp".into()),
-					message: format!(
-						"Unknown CloudFormation resource type: {} (in resource `{}`)",
-						resource.resource_type, logical_id
-					),
+					message,
 					..Default::default()
 				});
 				continue;
