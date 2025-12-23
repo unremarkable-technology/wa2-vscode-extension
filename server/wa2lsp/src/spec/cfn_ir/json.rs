@@ -168,10 +168,10 @@ impl<'a> CfnParser for JsonCfnParser<'a> {
 		node: &Self::Node,
 	) -> Result<Option<(IntrinsicKind, Self::Node)>, Vec<Diagnostic>> {
 		// JSON only has long-form like {"Ref": "MyBucket"}
-		if let Some(entries) = self.object_entries(node) {
-			if entries.len() == 1 {
+		if let Some(entries) = self.object_entries(node)
+			&& entries.len() == 1 {
 				let (key, value_node) = &entries[0];
-				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(&key) {
+				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
 					return Ok(Some((intrinsic.kind, value_node.clone())));
 				}
 
@@ -188,7 +188,6 @@ impl<'a> CfnParser for JsonCfnParser<'a> {
 					}]);
 				}
 			}
-		}
 
 		Ok(None)
 	}
@@ -203,6 +202,7 @@ impl<'a> CfnParser for JsonCfnParser<'a> {
 				.map(|prop| {
 					let key = Some(prop.name.as_str().to_string());
 					let value = prop.value.clone();
+
 					// Get key range using ranged_to_range on the name
 					let key_range = self.ranged_to_range(&prop.name);
 					(key, value, key_range)

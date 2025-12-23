@@ -214,8 +214,8 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 		}
 
 		// Check for long-form like "Ref: MyBucket"
-		if let Some(entries) = self.object_entries(node) {
-			if entries.len() == 1 {
+		if let Some(entries) = self.object_entries(node)
+			&& entries.len() == 1 {
 				let (key, value_node) = &entries[0];
 				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
 					return Ok(Some((intrinsic.kind, value_node.clone())));
@@ -234,7 +234,6 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 					}]);
 				}
 			}
-		}
 
 		Ok(None)
 	}
@@ -245,6 +244,7 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 	) -> Option<Vec<ObjectEntry<Self::Node>>> {
 		match &node.data {
 			YamlData::Mapping(map) => {
+				eprintln!("oentries: {}", map.len());
 				let entries = map
 					.iter()
 					.map(|(k, v)| {

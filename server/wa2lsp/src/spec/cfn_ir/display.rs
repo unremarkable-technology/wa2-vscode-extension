@@ -189,6 +189,12 @@ impl fmt::Display for CfnValue {
 					write!(f, "!FindInMap [{}, {}, {}]", map_name, top_key, second_key)
 				}
 			}
+			CfnValue::ToJsonString { value, .. } => {
+				write!(f, "!ToJsonString {}", value)
+			}
+			CfnValue::Length { array, .. } => {
+				write!(f, "!Length {}", array)
+			}
 		}
 	}
 }

@@ -861,6 +861,12 @@ impl CfnTemplate {
 					Self::validate_intrinsics(default, symbols, diagnostics, spec);
 				}
 			}
+			CfnValue::ToJsonString { value, .. } => {
+				Self::validate_intrinsics(value, symbols, diagnostics, spec);
+			}
+			CfnValue::Length { array, .. } => {
+				Self::validate_intrinsics(array, symbols, diagnostics, spec);
+			}
 			CfnValue::Array(items, _) => {
 				for item in items {
 					Self::validate_intrinsics(item, symbols, diagnostics, spec); // Pass spec

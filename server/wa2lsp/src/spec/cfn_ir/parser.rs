@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{Diagnostic, Range};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Location, Range};
 
 use crate::spec::{cfn_ir::types::CfnMapping, intrinsics::IntrinsicKind};
 use std::collections::HashMap;
@@ -130,7 +130,7 @@ fn parse_resources<P: CfnParser>(
 	node: &P::Node,
 	uri: &Url,
 ) -> ParseResult<HashMap<String, CfnResource>> {
-	let mut resources = HashMap::new();
+	let mut resources: HashMap<String, CfnResource> = HashMap::new();
 	let mut errors = Vec::new();
 
 	// Get all resources with key ranges
@@ -150,12 +150,11 @@ fn parse_resources<P: CfnParser>(
 
 	// Parse each resource
 	for (logical_id_opt, resource_node, key_range) in entries {
-		// ← Now we have key_range
 		let logical_id = match logical_id_opt {
 			Some(id) => id,
 			None => {
 				errors.push(Diagnostic {
-                    range: key_range,  // ← Use key_range instead of node_range
+                    range: key_range,
                     severity: Some(DiagnosticSeverity::WARNING),
                     code: Some(NumberOrString::String("WA2_CFN_RESOURCE_KEY_NOT_STRING".into())),
                     source: Some("wa2-lsp".into()),
@@ -166,13 +165,56 @@ fn parse_resources<P: CfnParser>(
 			}
 		};
 
-		match parse_resource(parser, &logical_id, &resource_node, key_range, uri) {
-			// ← Pass key_range
-			Ok(resource) => {
-				resources.insert(logical_id, resource);
+		// Validate logical ID format
+		if let Some(diag) = validate_logical_id(&logical_id, "resource", key_range, uri) {
+			errors.push(diag);
+			continue; // Skip parsing this resource
+		}
+
+		// Try to insert - if key exists, it's a duplicate
+		match resources.entry(logical_id.clone()) {
+			std::collections::hash_map::Entry::Occupied(entry) => {
+				// Duplicate key found
+				let first_range = entry.get().logical_id_range;
+				errors.push(Diagnostic {
+					range: key_range,
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String("WA2_CFN_DUPLICATE_KEY".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Duplicate resource key `{}`. Previous definition will be overwritten.",
+						logical_id
+					),
+					related_information: Some(vec![DiagnosticRelatedInformation {
+						location: Location {
+							uri: uri.clone(),
+							range: first_range,
+						},
+						message: "First definition here".to_string(),
+					}]),
+					..Default::default()
+				});
+
+				// Parse the resource anyway (overwriting the previous one)
+				match parse_resource(parser, &logical_id, &resource_node, key_range, uri) {
+					Ok(resource) => {
+						*entry.into_mut() = resource; // Overwrite
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
-			Err(mut diags) => {
-				errors.append(&mut diags);
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				// First occurrence
+				match parse_resource(parser, &logical_id, &resource_node, key_range, uri) {
+					Ok(resource) => {
+						entry.insert(resource);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
 		}
 	}
@@ -290,7 +332,7 @@ fn parse_parameters<P: CfnParser>(
 	node: &P::Node,
 	uri: &Url,
 ) -> ParseResult<HashMap<String, CfnParameter>> {
-	let mut parameters = HashMap::new();
+	let mut parameters: HashMap<String, CfnParameter> = HashMap::new();
 	let mut errors = Vec::new();
 
 	// Get all parameters including invalid keys
@@ -313,7 +355,6 @@ fn parse_parameters<P: CfnParser>(
 		let param_name = match param_name_opt {
 			Some(name) => name,
 			None => {
-				// Non-string key
 				errors.push(Diagnostic {
 					range: parser.node_range(&param_node),
 					severity: Some(DiagnosticSeverity::WARNING),
@@ -330,12 +371,53 @@ fn parse_parameters<P: CfnParser>(
 
 		let name_range = parser.node_range(&param_node);
 
-		match parse_parameter(parser, &param_name, &param_node, name_range, uri) {
-			Ok(param) => {
-				parameters.insert(param_name, param);
+		// Validate logical ID format
+		if let Some(diag) = validate_logical_id(&param_name, "parameter", name_range, uri) {
+			errors.push(diag);
+			continue;
+		}
+
+		// Try to insert - if key exists, it's a duplicate
+		match parameters.entry(param_name.clone()) {
+			std::collections::hash_map::Entry::Occupied(entry) => {
+				let first_range = entry.get().name_range;
+				errors.push(Diagnostic {
+					range: name_range,
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String("WA2_CFN_DUPLICATE_KEY".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Duplicate parameter key `{}`. Previous definition will be overwritten.",
+						param_name
+					),
+					related_information: Some(vec![DiagnosticRelatedInformation {
+						location: Location {
+							uri: uri.clone(),
+							range: first_range,
+						},
+						message: "First definition here".to_string(),
+					}]),
+					..Default::default()
+				});
+
+				match parse_parameter(parser, &param_name, &param_node, name_range, uri) {
+					Ok(param) => {
+						*entry.into_mut() = param;
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
-			Err(mut diags) => {
-				errors.append(&mut diags);
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				match parse_parameter(parser, &param_name, &param_node, name_range, uri) {
+					Ok(param) => {
+						entry.insert(param);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
 		}
 	}
@@ -346,7 +428,6 @@ fn parse_parameters<P: CfnParser>(
 
 	Ok(parameters)
 }
-
 fn parse_parameter<P: CfnParser>(
 	parser: &P,
 	name: &str,
@@ -410,7 +491,7 @@ fn parse_conditions<P: CfnParser>(
 	node: &P::Node,
 	uri: &Url,
 ) -> ParseResult<HashMap<String, CfnCondition>> {
-	let mut conditions = HashMap::new();
+	let mut conditions: HashMap<String, CfnCondition> = HashMap::new();
 	let mut errors = Vec::new();
 
 	// Get all conditions including invalid keys
@@ -433,7 +514,6 @@ fn parse_conditions<P: CfnParser>(
 		let condition_name = match condition_name_opt {
 			Some(name) => name,
 			None => {
-				// Non-string key
 				errors.push(Diagnostic {
 					range: parser.node_range(&condition_node),
 					severity: Some(DiagnosticSeverity::WARNING),
@@ -450,12 +530,53 @@ fn parse_conditions<P: CfnParser>(
 
 		let name_range = parser.node_range(&condition_node);
 
-		match parse_condition(parser, &condition_name, &condition_node, name_range, uri) {
-			Ok(condition) => {
-				conditions.insert(condition_name, condition);
+		// Validate logical ID format
+		if let Some(diag) = validate_logical_id(&condition_name, "condition", name_range, uri) {
+			errors.push(diag);
+			continue;
+		}
+
+		// Try to insert - if key exists, it's a duplicate
+		match conditions.entry(condition_name.clone()) {
+			std::collections::hash_map::Entry::Occupied(entry) => {
+				let first_range = entry.get().name_range;
+				errors.push(Diagnostic {
+					range: name_range,
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String("WA2_CFN_DUPLICATE_KEY".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Duplicate condition key `{}`. Previous definition will be overwritten.",
+						condition_name
+					),
+					related_information: Some(vec![DiagnosticRelatedInformation {
+						location: Location {
+							uri: uri.clone(),
+							range: first_range,
+						},
+						message: "First definition here".to_string(),
+					}]),
+					..Default::default()
+				});
+
+				match parse_condition(parser, &condition_name, &condition_node, name_range, uri) {
+					Ok(condition) => {
+						*entry.into_mut() = condition;
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
-			Err(mut diags) => {
-				errors.append(&mut diags);
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				match parse_condition(parser, &condition_name, &condition_node, name_range, uri) {
+					Ok(condition) => {
+						entry.insert(condition);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
 		}
 	}
@@ -489,7 +610,7 @@ fn parse_mappings<P: CfnParser>(
 	node: &P::Node,
 	uri: &Url,
 ) -> ParseResult<HashMap<String, CfnMapping>> {
-	let mut mappings = HashMap::new();
+	let mut mappings: HashMap<String, CfnMapping> = HashMap::new();
 	let mut errors = Vec::new();
 
 	// Get all mappings including invalid keys
@@ -528,12 +649,53 @@ fn parse_mappings<P: CfnParser>(
 
 		let name_range = parser.node_range(&mapping_node);
 
-		match parse_mapping(parser, &mapping_name, &mapping_node, name_range, uri) {
-			Ok(mapping) => {
-				mappings.insert(mapping_name, mapping);
+		// Validate logical ID format
+		if let Some(diag) = validate_logical_id(&mapping_name, "mapping", name_range, uri) {
+			errors.push(diag);
+			continue;
+		}
+
+		// Try to insert - if key exists, it's a duplicate
+		match mappings.entry(mapping_name.clone()) {
+			std::collections::hash_map::Entry::Occupied(entry) => {
+				let first_range = entry.get().name_range;
+				errors.push(Diagnostic {
+					range: name_range,
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String("WA2_CFN_DUPLICATE_KEY".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Duplicate mapping key `{}`. Previous definition will be overwritten.",
+						mapping_name
+					),
+					related_information: Some(vec![DiagnosticRelatedInformation {
+						location: Location {
+							uri: uri.clone(),
+							range: first_range,
+						},
+						message: "First definition here".to_string(),
+					}]),
+					..Default::default()
+				});
+
+				match parse_mapping(parser, &mapping_name, &mapping_node, name_range, uri) {
+					Ok(mapping) => {
+						*entry.into_mut() = mapping;
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
-			Err(mut diags) => {
-				errors.append(&mut diags);
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				match parse_mapping(parser, &mapping_name, &mapping_node, name_range, uri) {
+					Ok(mapping) => {
+						entry.insert(mapping);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
 			}
 		}
 	}
@@ -688,6 +850,8 @@ fn parse_intrinsic<P: CfnParser>(
 		IntrinsicKind::Cidr => parse_cidr(parser, node, range),
 		IntrinsicKind::ImportValue => parse_import_value(parser, node, range),
 		IntrinsicKind::FindInMap => parse_find_in_map(parser, node, range),
+		IntrinsicKind::ToJsonString => parse_to_json_string(parser, node, range),
+		IntrinsicKind::Length => parse_length(parser, node, range),
 	}
 }
 
@@ -866,35 +1030,34 @@ fn parse_find_in_map<P: CfnParser>(
 
 	let len = parser.array_len(node);
 
-	if len == Some(3) || len == Some(4) {
-		if let (Some(map_node), Some(top_node), Some(second_node)) = (
+	if (len == Some(3) || len == Some(4))
+		&& let (Some(map_node), Some(top_node), Some(second_node)) = (
 			parser.array_get(node, 0),
 			parser.array_get(node, 1),
 			parser.array_get(node, 2),
 		) {
-			let map_name = parse_value(parser, &map_node)?;
-			let top_key = parse_value(parser, &top_node)?;
-			let second_key = parse_value(parser, &second_node)?;
+		let map_name = parse_value(parser, &map_node)?;
+		let top_key = parse_value(parser, &top_node)?;
+		let second_key = parse_value(parser, &second_node)?;
 
-			// Parse optional 4th parameter (DefaultValue)
-			let default_value = if len == Some(4) {
-				if let Some(default_node) = parser.array_get(node, 3) {
-					Some(Box::new(parse_value(parser, &default_node)?))
-				} else {
-					None
-				}
+		// Parse optional 4th parameter (DefaultValue)
+		let default_value = if len == Some(4) {
+			if let Some(default_node) = parser.array_get(node, 3) {
+				Some(Box::new(parse_value(parser, &default_node)?))
 			} else {
 				None
-			};
+			}
+		} else {
+			None
+		};
 
-			return Ok(CfnValue::FindInMap {
-				map_name: Box::new(map_name),
-				top_key: Box::new(top_key),
-				second_key: Box::new(second_key),
-				default_value,
-				range,
-			});
-		}
+		return Ok(CfnValue::FindInMap {
+			map_name: Box::new(map_name),
+			top_key: Box::new(top_key),
+			second_key: Box::new(second_key),
+			default_value,
+			range,
+		});
 	}
 
 	Err(make_diagnostic(
@@ -902,6 +1065,26 @@ fn parse_find_in_map<P: CfnParser>(
         "WA2_CFN_MALFORMED_FINDINMAP",
         "Malformed !FindInMap: expected array [MapName, TopLevelKey, SecondLevelKey] or [MapName, TopLevelKey, SecondLevelKey, DefaultValue]".to_string(),
     ))
+}
+
+fn parse_to_json_string<P: CfnParser>(
+	parser: &P,
+	node: &P::Node,
+	range: Range,
+) -> ParseResult<CfnValue> {
+	let value = parse_value(parser, node)?;
+	Ok(CfnValue::ToJsonString {
+		value: Box::new(value),
+		range,
+	})
+}
+
+fn parse_length<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
+	let array = parse_value(parser, node)?;
+	Ok(CfnValue::Length {
+		array: Box::new(array),
+		range,
+	})
 }
 
 fn parse_join<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
@@ -1126,4 +1309,24 @@ fn parse_sub<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseRes
 		"WA2_CFN_MALFORMED_SUB",
 		"Malformed !Sub: expected string or array [template, variables]".to_string(),
 	))
+}
+
+/// Validate CloudFormation logical ID format
+/// Must be alphanumeric (a-zA-Z0-9)
+fn validate_logical_id(id: &str, id_type: &str, range: Range, _uri: &Url) -> Option<Diagnostic> {
+	// CloudFormation logical IDs must be alphanumeric
+	if !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+		return Some(Diagnostic {
+			range,
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_INVALID_LOGICAL_ID".into())),
+			source: Some("wa2-lsp".into()),
+			message: format!(
+				"Invalid {} name `{}`. CloudFormation logical IDs must contain only alphanumeric characters (a-zA-Z0-9).",
+				id_type, id
+			),
+			..Default::default()
+		});
+	}
+	None
 }

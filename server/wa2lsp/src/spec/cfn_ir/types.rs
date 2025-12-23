@@ -176,6 +176,15 @@ pub enum CfnValue {
 		default_value: Option<Box<CfnValue>>,
 		range: Range,
 	},
+
+	ToJsonString {
+		value: Box<CfnValue>,
+		range: Range,
+	},
+	Length {
+		array: Box<CfnValue>,
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -205,6 +214,8 @@ impl CfnValue {
 			CfnValue::Cidr { range, .. } => *range,
 			CfnValue::ImportValue { range, .. } => *range,
 			CfnValue::FindInMap { range, .. } => *range,
+			CfnValue::ToJsonString { range, .. } => *range,
+			CfnValue::Length { range, .. } => *range,
 		}
 	}
 

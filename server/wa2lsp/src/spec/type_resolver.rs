@@ -197,6 +197,15 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 				collection: CollectionKind::Scalar,
 			})
 		}
+
+		CfnValue::ToJsonString { .. } => Some(TypeInfo {
+			kind: ShapeKind::Primitive(PrimitiveType::String),
+			collection: CollectionKind::Scalar,
+		}),
+		CfnValue::Length { .. } => Some(TypeInfo {
+			kind: ShapeKind::Primitive(PrimitiveType::Integer),
+			collection: CollectionKind::Scalar,
+		}),
 	}
 }
 

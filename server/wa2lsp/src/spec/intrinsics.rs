@@ -20,6 +20,8 @@ pub enum IntrinsicKind {
 	Cidr,
 	ImportValue,
 	FindInMap,
+	ToJsonString,
+	Length,
 }
 
 /// Definition of an intrinsic function
@@ -116,6 +118,16 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::FindInMap,
 		json_key: "Fn::FindInMap",
 		yaml_tag: "FindInMap",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::ToJsonString,
+		json_key: "Fn::ToJsonString",
+		yaml_tag: "ToJsonString",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Length,
+		json_key: "Fn::Length",
+		yaml_tag: "Length",
 	},
 ];
 
