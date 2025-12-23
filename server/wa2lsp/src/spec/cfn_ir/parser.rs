@@ -71,8 +71,13 @@ pub trait CfnParser {
 	) -> Option<Vec<(Option<String>, Self::Node)>>;
 
 	/// Check if this node represents an intrinsic function
-	/// Returns (intrinsic_kind, inner_node) if it's an intrinsic
-	fn detect_intrinsic(&self, node: &Self::Node) -> Option<(IntrinsicKind, Self::Node)>;
+	/// Returns Ok(Some((kind, inner))) for known intrinsics
+	/// Returns Ok(None) if not an intrinsic
+	/// Returns Err(...) for unknown intrinsics
+	fn detect_intrinsic(
+		&self,
+		node: &Self::Node,
+	) -> Result<Option<(IntrinsicKind, Self::Node)>, Vec<Diagnostic>>;
 
 	/// Get all entries from an object with both key and value ranges
 	/// Returns (key_string, value_node, key_range)
@@ -493,8 +498,14 @@ fn parse_value<P: CfnParser>(parser: &P, node: &P::Node) -> ParseResult<CfnValue
 	}
 
 	// Check for intrinsics BEFORE checking arrays/objects
-	if let Some((kind, inner_node)) = parser.detect_intrinsic(node) {
-		return parse_intrinsic(parser, kind, &inner_node, range);
+	match parser.detect_intrinsic(node)? {
+		// ← Handle Result with ?
+		Some((kind, inner_node)) => {
+			return parse_intrinsic(parser, kind, &inner_node, range);
+		}
+		None => {
+			// Not an intrinsic, continue
+		}
 	}
 
 	// Try array

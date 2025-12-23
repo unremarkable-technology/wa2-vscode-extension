@@ -186,27 +186,56 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 		}
 	}
 
-	fn detect_intrinsic(&self, node: &Self::Node) -> Option<(IntrinsicKind, Self::Node)> {
+	fn detect_intrinsic(
+		&self,
+		node: &Self::Node,
+	) -> Result<Option<(IntrinsicKind, Self::Node)>, Vec<Diagnostic>> {
 		use saphyr::YamlData;
 
-		// Check for YAML tags like !Ref, !GetAtt, !And
-		if let YamlData::Tagged(tag, inner) = &node.data
-			&& let Some(intrinsic) = intrinsics::get_intrinsic_by_tag(&tag.suffix)
-		{
-			return Some((intrinsic.kind, (**inner).clone()));
+		// Check for YAML tags like !Ref, !GetAtt, !FindInMap
+		if let YamlData::Tagged(tag, inner) = &node.data {
+			let tag_name = &tag.suffix;
+
+			if let Some(intrinsic) = intrinsics::get_intrinsic_by_tag(tag_name) {
+				return Ok(Some((intrinsic.kind, (**inner).clone())));
+			}
+
+			// Unknown YAML tag - error!
+			let range = self.node_range(node);
+			return Err(vec![Diagnostic {
+				range,
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_INTRINSIC".into())),
+				source: Some("wa2-lsp".into()),
+				message: format!("Unknown CloudFormation intrinsic function: !{}", tag_name),
+				..Default::default()
+			}]);
 		}
 
 		// Check for long-form like "Ref: MyBucket"
-		if let Some(entries) = self.object_entries(node)
-			&& entries.len() == 1
-		{
-			let (key, value_node) = &entries[0];
-			if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
-				return Some((intrinsic.kind, value_node.clone()));
+		if let Some(entries) = self.object_entries(node) {
+			if entries.len() == 1 {
+				let (key, value_node) = &entries[0];
+				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
+					return Ok(Some((intrinsic.kind, value_node.clone())));
+				}
+
+				// Check if it's an unknown Fn::* intrinsic
+				if key.starts_with("Fn::") {
+					let range = self.node_range(node);
+					return Err(vec![Diagnostic {
+						range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_INTRINSIC".into())),
+						source: Some("wa2-lsp".into()),
+						message: format!("Unknown CloudFormation intrinsic function: {}", key),
+						..Default::default()
+					}]);
+				}
 			}
 		}
 
-		None
+		Ok(None)
 	}
 
 	fn object_entries_with_ranges(
