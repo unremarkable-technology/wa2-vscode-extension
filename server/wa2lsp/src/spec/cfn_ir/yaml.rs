@@ -20,6 +20,7 @@ impl CfnTemplate {
 				resources: HashMap::new(),
 				parameters: HashMap::new(),
 				conditions: HashMap::new(),
+				mappings: HashMap::new(),
 			});
 		}
 

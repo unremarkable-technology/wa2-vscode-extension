@@ -188,6 +188,15 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 				collection: CollectionKind::Scalar,
 			})
 		}
+
+		CfnValue::FindInMap { .. } => {
+			// FindInMap returns whatever type is stored in the mapping
+			// Without analyzing the actual mapping values, return Any
+			Some(TypeInfo {
+				kind: ShapeKind::Any,
+				collection: CollectionKind::Scalar,
+			})
+		}
 	}
 }
 

@@ -172,6 +172,23 @@ impl fmt::Display for CfnValue {
 				}
 				write!(f, "}}")
 			}
+			CfnValue::FindInMap {
+				map_name,
+				top_key,
+				second_key,
+				default_value,
+				..
+			} => {
+				if let Some(default) = default_value {
+					write!(
+						f,
+						"!FindInMap [{}, {}, {}, {}]",
+						map_name, top_key, second_key, default
+					)
+				} else {
+					write!(f, "!FindInMap [{}, {}, {}]", map_name, top_key, second_key)
+				}
+			}
 		}
 	}
 }

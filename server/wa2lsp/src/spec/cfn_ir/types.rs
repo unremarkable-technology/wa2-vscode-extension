@@ -9,6 +9,7 @@ pub struct CfnTemplate {
 	pub resources: HashMap<String, CfnResource>,
 	pub parameters: HashMap<String, CfnParameter>,
 	pub conditions: HashMap<String, CfnCondition>,
+	pub mappings: HashMap<String, CfnMapping>,
 }
 
 /// A CloudFormation resource with position tracking
@@ -41,6 +42,16 @@ pub struct CfnParameter {
 pub struct CfnCondition {
 	pub name: String,
 	pub expression: CfnValue, // The condition expression (e.g., !Equals [...])
+
+	// Position tracking
+	pub name_range: Range,
+}
+
+/// A CloudFormation mapping declaration
+#[derive(Debug, Clone)]
+pub struct CfnMapping {
+	pub name: String,
+	pub map: HashMap<String, HashMap<String, CfnValue>>, // Top-level key -> Second-level key -> Value
 
 	// Position tracking
 	pub name_range: Range,
@@ -157,6 +168,14 @@ pub enum CfnValue {
 		name: Box<CfnValue>,
 		range: Range,
 	},
+
+	FindInMap {
+		map_name: Box<CfnValue>,
+		top_key: Box<CfnValue>,
+		second_key: Box<CfnValue>,
+		default_value: Option<Box<CfnValue>>,
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -185,6 +204,7 @@ impl CfnValue {
 			CfnValue::Split { range, .. } => *range,
 			CfnValue::Cidr { range, .. } => *range,
 			CfnValue::ImportValue { range, .. } => *range,
+			CfnValue::FindInMap { range, .. } => *range,
 		}
 	}
 

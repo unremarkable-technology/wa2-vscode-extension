@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Diagnostic, Range};
 
-use crate::spec::intrinsics::IntrinsicKind;
+use crate::spec::{cfn_ir::types::CfnMapping, intrinsics::IntrinsicKind};
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 use url::Url;
@@ -95,6 +95,7 @@ pub fn parse_template<P: CfnParser>(
 	let mut resources = HashMap::new();
 	let mut parameters = HashMap::new();
 	let mut conditions = HashMap::new();
+	let mut mappings = HashMap::new();
 
 	// Parse Resources section
 	if let Some(resources_node) = parser.get_section(root, "Resources") {
@@ -111,10 +112,16 @@ pub fn parse_template<P: CfnParser>(
 		conditions = parse_conditions(parser, &conditions_node, uri)?;
 	}
 
+	// Parse Mappings section
+	if let Some(mappings_node) = parser.get_section(root, "Mappings") {
+		mappings = parse_mappings(parser, &mappings_node, uri)?;
+	}
+
 	Ok(CfnTemplate {
 		resources,
 		parameters,
 		conditions,
+		mappings,
 	})
 }
 
@@ -477,6 +484,129 @@ fn parse_condition<P: CfnParser>(
 	})
 }
 
+fn parse_mappings<P: CfnParser>(
+	parser: &P,
+	node: &P::Node,
+	uri: &Url,
+) -> ParseResult<HashMap<String, CfnMapping>> {
+	let mut mappings = HashMap::new();
+	let mut errors = Vec::new();
+
+	// Get all mappings including invalid keys
+	let entries = match parser.object_entries_with_invalid_keys(node) {
+		Some(entries) => entries,
+		None => {
+			return Err(vec![Diagnostic {
+				range: parser.node_range(node),
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_INVALID_MAPPINGS".into())),
+				source: Some("wa2-lsp".into()),
+				message: "Template Mappings section must be an object/mapping".to_string(),
+				..Default::default()
+			}]);
+		}
+	};
+
+	// Parse each mapping
+	for (mapping_name_opt, mapping_node) in entries {
+		let mapping_name = match mapping_name_opt {
+			Some(name) => name,
+			None => {
+				errors.push(Diagnostic {
+					range: parser.node_range(&mapping_node),
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String(
+						"WA2_CFN_MAPPING_KEY_NOT_STRING".into(),
+					)),
+					source: Some("wa2-lsp".into()),
+					message: "Template: mapping key is not a string".to_string(),
+					..Default::default()
+				});
+				continue;
+			}
+		};
+
+		let name_range = parser.node_range(&mapping_node);
+
+		match parse_mapping(parser, &mapping_name, &mapping_node, name_range, uri) {
+			Ok(mapping) => {
+				mappings.insert(mapping_name, mapping);
+			}
+			Err(mut diags) => {
+				errors.append(&mut diags);
+			}
+		}
+	}
+
+	if !errors.is_empty() {
+		return Err(errors);
+	}
+
+	Ok(mappings)
+}
+
+fn parse_mapping<P: CfnParser>(
+	parser: &P,
+	name: &str,
+	node: &P::Node,
+	name_range: Range,
+	_uri: &Url,
+) -> ParseResult<CfnMapping> {
+	// A mapping is a two-level nested object:
+	// MapName:
+	//   TopLevelKey:
+	//     SecondLevelKey: Value
+
+	let top_level_entries = match parser.object_entries(node) {
+		Some(entries) => entries,
+		None => {
+			return Err(vec![Diagnostic {
+				range: parser.node_range(node),
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_INVALID_MAPPING".into())),
+				source: Some("wa2-lsp".into()),
+				message: format!("Mapping `{}` must be an object", name),
+				..Default::default()
+			}]);
+		}
+	};
+
+	let mut map = HashMap::new();
+
+	for (top_key, second_level_node) in top_level_entries {
+		let second_level_entries = match parser.object_entries(&second_level_node) {
+			Some(entries) => entries,
+			None => {
+				return Err(vec![Diagnostic {
+					range: parser.node_range(&second_level_node),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_INVALID_MAPPING".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Mapping `{}` top-level key `{}` must be an object",
+						name, top_key
+					),
+					..Default::default()
+				}]);
+			}
+		};
+
+		let mut second_level_map = HashMap::new();
+		for (second_key, value_node) in second_level_entries {
+			let value = parse_value(parser, &value_node)?;
+			second_level_map.insert(second_key, value);
+		}
+
+		map.insert(top_key, second_level_map);
+	}
+
+	Ok(CfnMapping {
+		name: name.to_string(),
+		map,
+		name_range,
+	})
+}
+
 fn parse_value<P: CfnParser>(parser: &P, node: &P::Node) -> ParseResult<CfnValue> {
 	let range = parser.node_range(node);
 
@@ -557,6 +687,7 @@ fn parse_intrinsic<P: CfnParser>(
 		IntrinsicKind::Split => parse_split(parser, node, range),
 		IntrinsicKind::Cidr => parse_cidr(parser, node, range),
 		IntrinsicKind::ImportValue => parse_import_value(parser, node, range),
+		IntrinsicKind::FindInMap => parse_find_in_map(parser, node, range),
 	}
 }
 
@@ -723,6 +854,54 @@ fn parse_import_value<P: CfnParser>(
 		name: Box::new(name),
 		range,
 	})
+}
+
+fn parse_find_in_map<P: CfnParser>(
+	parser: &P,
+	node: &P::Node,
+	range: Range,
+) -> ParseResult<CfnValue> {
+	// FindInMap: [MapName, TopLevelKey, SecondLevelKey] or
+	//            [MapName, TopLevelKey, SecondLevelKey, {DefaultValue: ...}]
+
+	let len = parser.array_len(node);
+
+	if len == Some(3) || len == Some(4) {
+		if let (Some(map_node), Some(top_node), Some(second_node)) = (
+			parser.array_get(node, 0),
+			parser.array_get(node, 1),
+			parser.array_get(node, 2),
+		) {
+			let map_name = parse_value(parser, &map_node)?;
+			let top_key = parse_value(parser, &top_node)?;
+			let second_key = parse_value(parser, &second_node)?;
+
+			// Parse optional 4th parameter (DefaultValue)
+			let default_value = if len == Some(4) {
+				if let Some(default_node) = parser.array_get(node, 3) {
+					Some(Box::new(parse_value(parser, &default_node)?))
+				} else {
+					None
+				}
+			} else {
+				None
+			};
+
+			return Ok(CfnValue::FindInMap {
+				map_name: Box::new(map_name),
+				top_key: Box::new(top_key),
+				second_key: Box::new(second_key),
+				default_value,
+				range,
+			});
+		}
+	}
+
+	Err(make_diagnostic(
+        range,
+        "WA2_CFN_MALFORMED_FINDINMAP",
+        "Malformed !FindInMap: expected array [MapName, TopLevelKey, SecondLevelKey] or [MapName, TopLevelKey, SecondLevelKey, DefaultValue]".to_string(),
+    ))
 }
 
 fn parse_join<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {

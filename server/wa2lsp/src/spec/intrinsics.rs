@@ -19,6 +19,7 @@ pub enum IntrinsicKind {
 	Split,
 	Cidr,
 	ImportValue,
+	FindInMap,
 }
 
 /// Definition of an intrinsic function
@@ -110,6 +111,11 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::ImportValue,
 		json_key: "Fn::ImportValue",
 		yaml_tag: "ImportValue",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::FindInMap,
+		json_key: "Fn::FindInMap",
+		yaml_tag: "FindInMap",
 	},
 ];
 

@@ -847,6 +847,20 @@ impl CfnTemplate {
 			CfnValue::ImportValue { name, .. } => {
 				Self::validate_intrinsics(name, symbols, diagnostics, spec);
 			}
+			CfnValue::FindInMap {
+				map_name,
+				top_key,
+				second_key,
+				default_value,
+				..
+			} => {
+				Self::validate_intrinsics(map_name, symbols, diagnostics, spec);
+				Self::validate_intrinsics(top_key, symbols, diagnostics, spec);
+				Self::validate_intrinsics(second_key, symbols, diagnostics, spec);
+				if let Some(default) = default_value {
+					Self::validate_intrinsics(default, symbols, diagnostics, spec);
+				}
+			}
 			CfnValue::Array(items, _) => {
 				for item in items {
 					Self::validate_intrinsics(item, symbols, diagnostics, spec); // Pass spec
