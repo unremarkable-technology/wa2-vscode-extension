@@ -22,6 +22,7 @@ pub enum IntrinsicKind {
 	FindInMap,
 	ToJsonString,
 	Length,
+	Contains,
 }
 
 /// Definition of an intrinsic function
@@ -128,6 +129,11 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::Length,
 		json_key: "Fn::Length",
 		yaml_tag: "Length",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Contains,
+		json_key: "Fn::Contains",
+		yaml_tag: "Contains",
 	},
 ];
 

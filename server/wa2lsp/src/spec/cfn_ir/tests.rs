@@ -1237,16 +1237,23 @@ Resources:
 			_,
 		) => {
 			assert_eq!(delimiter, "-");
-			assert_eq!(values.len(), 3);
+			// values is now Box<CfnValue>, should be an Array
+			if let CfnValue::Array(items, _) = &**values {
+				assert_eq!(items.len(), 3);
 
-			// Check first value is "dev"
-			assert!(matches!(&values[0], CfnValue::String(s, _) if s == "dev"));
+				// Check first value is "dev"
+				assert!(matches!(&items[0], CfnValue::String(s, _) if s == "dev"));
 
-			// Check second value is !Ref AWS::Region
-			assert!(matches!(&values[1], CfnValue::Ref { target, .. } if target == "AWS::Region"));
+				// Check second value is !Ref AWS::Region
+				assert!(
+					matches!(&items[1], CfnValue::Ref { target, .. } if target == "AWS::Region")
+				);
 
-			// Check third value is "bucket"
-			assert!(matches!(&values[2], CfnValue::String(s, _) if s == "bucket"));
+				// Check third value is "bucket"
+				assert!(matches!(&items[2], CfnValue::String(s, _) if s == "bucket"));
+			} else {
+				panic!("Expected Join values to be an Array, got {:?}", values);
+			}
 		}
 		other => panic!("expected Join CfnValue, got {:?}", other),
 	}

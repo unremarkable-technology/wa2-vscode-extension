@@ -4,12 +4,13 @@ use tower_lsp::lsp_types::Range;
 
 /// CloudFormation template intermediate representation
 // Update CfnTemplate struct
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CfnTemplate {
 	pub resources: HashMap<String, CfnResource>,
 	pub parameters: HashMap<String, CfnParameter>,
 	pub conditions: HashMap<String, CfnCondition>,
 	pub mappings: HashMap<String, CfnMapping>,
+	pub rules: HashMap<String, CfnRule>,
 }
 
 /// A CloudFormation resource with position tracking
@@ -57,6 +58,24 @@ pub struct CfnMapping {
 	pub name_range: Range,
 }
 
+/// A CloudFormation rule declaration (for parameter validation)
+#[derive(Debug, Clone)]
+pub struct CfnRule {
+	pub name: String,
+	pub assertions: Vec<CfnAssertion>,
+
+	// Position tracking
+	pub name_range: Range,
+}
+
+/// An assertion within a rule
+#[derive(Debug, Clone)]
+pub struct CfnAssertion {
+	pub assert_condition: CfnValue,
+	pub assert_description: Option<String>,
+	pub range: Range,
+}
+
 /// A value in a CloudFormation template with position tracking
 #[derive(Debug, Clone)]
 pub enum CfnValue {
@@ -96,7 +115,7 @@ pub enum CfnValue {
 	/// !Join / { "Fn::Join": [delimiter, [values]] }
 	Join {
 		delimiter: String,
-		values: Vec<CfnValue>,
+		values: Box<CfnValue>,
 		range: Range,
 	},
 
@@ -185,6 +204,12 @@ pub enum CfnValue {
 		array: Box<CfnValue>,
 		range: Range,
 	},
+
+	Contains {
+		values: Box<CfnValue>, // Array to search in
+		value: Box<CfnValue>,  // Value to search for
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -216,6 +241,7 @@ impl CfnValue {
 			CfnValue::FindInMap { range, .. } => *range,
 			CfnValue::ToJsonString { range, .. } => *range,
 			CfnValue::Length { range, .. } => *range,
+			CfnValue::Contains { range, .. } => *range,
 		}
 	}
 

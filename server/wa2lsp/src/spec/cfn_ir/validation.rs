@@ -111,6 +111,11 @@ impl CfnTemplate {
 			// Check for required properties
 			for (prop_name, prop_spec) in &resource_spec.properties {
 				if prop_spec.required && !resource.properties.contains_key(&prop_name.0) {
+					// TECHDEBT: Skip known exceptions where AWS specs / cfn-lint tests disagree
+					if Self::is_known_optional(&resource.resource_type, &prop_name.0) {
+						continue;
+					}
+
 					diagnostics.push(Diagnostic {
 						range: resource.logical_id_range,
 						severity: Some(DiagnosticSeverity::ERROR),
@@ -230,6 +235,15 @@ impl CfnTemplate {
 		}
 
 		diagnostics
+	}
+
+	/// Check if a property is known to be incorrectly marked as required in AWS specs
+	fn is_known_optional(resource_type: &str, property_name: &str) -> bool {
+		matches!(
+			(resource_type, property_name),
+			// AWS::CloudFormation::Stack - StackName is auto-generated if not provided
+			("AWS::CloudFormation::Stack", "StackName") // Add more exceptions here as we discover them
+		)
 	}
 
 	/// Validate oneOf constraint: exactly one of the required property sets must be satisfied
@@ -692,9 +706,7 @@ impl CfnTemplate {
 			}
 			CfnValue::Join { values, .. } => {
 				// Recursively validate all values in the array
-				for value in values {
-					Self::validate_intrinsics(value, symbols, diagnostics, spec);
-				}
+				Self::validate_intrinsics(values, symbols, diagnostics, spec);
 			}
 			CfnValue::Select { index, list, range } => {
 				// Validate index (should be a number or resolve to a number)
@@ -866,6 +878,10 @@ impl CfnTemplate {
 			}
 			CfnValue::Length { array, .. } => {
 				Self::validate_intrinsics(array, symbols, diagnostics, spec);
+			}
+			CfnValue::Contains { values, value, .. } => {
+				Self::validate_intrinsics(values, symbols, diagnostics, spec);
+				Self::validate_intrinsics(value, symbols, diagnostics, spec);
 			}
 			CfnValue::Array(items, _) => {
 				for item in items {

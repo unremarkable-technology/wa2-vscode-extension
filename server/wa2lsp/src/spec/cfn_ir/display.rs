@@ -80,14 +80,7 @@ impl fmt::Display for CfnValue {
 			CfnValue::Join {
 				delimiter, values, ..
 			} => {
-				write!(f, "!Join [\"{}\", [", delimiter)?;
-				for (i, v) in values.iter().enumerate() {
-					if i > 0 {
-						write!(f, ", ")?;
-					}
-					write!(f, "{}", v)?;
-				}
-				write!(f, "]]")
+				write!(f, "!Join [\"{}\", {}]", delimiter, values)
 			}
 			CfnValue::Select { index, list, .. } => {
 				write!(f, "!Select [{}, {}]", index, list)
@@ -194,6 +187,9 @@ impl fmt::Display for CfnValue {
 			}
 			CfnValue::Length { array, .. } => {
 				write!(f, "!Length {}", array)
+			}
+			CfnValue::Contains { values, value, .. } => {
+				write!(f, "!Contains [{}, {}]", values, value)
 			}
 		}
 	}

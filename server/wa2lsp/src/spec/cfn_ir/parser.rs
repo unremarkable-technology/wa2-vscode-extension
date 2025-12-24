@@ -1,6 +1,9 @@
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Location, Range};
 
-use crate::spec::{cfn_ir::types::CfnMapping, intrinsics::IntrinsicKind};
+use crate::spec::{
+	cfn_ir::types::{CfnAssertion, CfnMapping, CfnRule},
+	intrinsics::IntrinsicKind,
+};
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 use url::Url;
@@ -92,36 +95,42 @@ pub fn parse_template<P: CfnParser>(
 	root: &P::Node,
 	uri: &Url,
 ) -> ParseResult<CfnTemplate> {
-	let mut resources = HashMap::new();
-	let mut parameters = HashMap::new();
-	let mut conditions = HashMap::new();
-	let mut mappings = HashMap::new();
+	let resources = parser
+		.get_section(root, "Resources")
+		.map(|node| parse_resources(parser, &node, uri))
+		.transpose()?
+		.unwrap_or_default();
 
-	// Parse Resources section
-	if let Some(resources_node) = parser.get_section(root, "Resources") {
-		resources = parse_resources(parser, &resources_node, uri)?;
-	}
+	let parameters = parser
+		.get_section(root, "Parameters")
+		.map(|node| parse_parameters(parser, &node, uri))
+		.transpose()?
+		.unwrap_or_default();
 
-	// Parse Parameters section
-	if let Some(params_node) = parser.get_section(root, "Parameters") {
-		parameters = parse_parameters(parser, &params_node, uri)?;
-	}
+	let conditions = parser
+		.get_section(root, "Conditions")
+		.map(|node| parse_conditions(parser, &node, uri))
+		.transpose()?
+		.unwrap_or_default();
 
-	// Parse Conditions section
-	if let Some(conditions_node) = parser.get_section(root, "Conditions") {
-		conditions = parse_conditions(parser, &conditions_node, uri)?;
-	}
+	let mappings = parser
+		.get_section(root, "Mappings")
+		.map(|node| parse_mappings(parser, &node, uri))
+		.transpose()?
+		.unwrap_or_default();
 
-	// Parse Mappings section
-	if let Some(mappings_node) = parser.get_section(root, "Mappings") {
-		mappings = parse_mappings(parser, &mappings_node, uri)?;
-	}
-
+	let rules = parser
+		.get_section(root, "Rules")
+		.map(|node| parse_rules(parser, &node, uri))
+		.transpose()?
+		.unwrap_or_default();
+	
 	Ok(CfnTemplate {
 		resources,
 		parameters,
 		conditions,
 		mappings,
+		rules,
 	})
 }
 
@@ -769,6 +778,188 @@ fn parse_mapping<P: CfnParser>(
 	})
 }
 
+fn parse_rules<P: CfnParser>(
+	parser: &P,
+	node: &P::Node,
+	uri: &Url,
+) -> ParseResult<HashMap<String, CfnRule>> {
+	let mut rules: HashMap<String, CfnRule> = HashMap::new();
+	let mut errors = Vec::new();
+
+	// Get all rules including invalid keys
+	let entries = match parser.object_entries_with_invalid_keys(node) {
+		Some(entries) => entries,
+		None => {
+			return Err(vec![Diagnostic {
+				range: parser.node_range(node),
+				severity: Some(DiagnosticSeverity::ERROR),
+				code: Some(NumberOrString::String("WA2_CFN_INVALID_RULES".into())),
+				source: Some("wa2-lsp".into()),
+				message: "Template Rules section must be an object/mapping".to_string(),
+				..Default::default()
+			}]);
+		}
+	};
+
+	// Parse each rule
+	for (rule_name_opt, rule_node) in entries {
+		let rule_name = match rule_name_opt {
+			Some(name) => name,
+			None => {
+				errors.push(Diagnostic {
+					range: parser.node_range(&rule_node),
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String("WA2_CFN_RULE_KEY_NOT_STRING".into())),
+					source: Some("wa2-lsp".into()),
+					message: "Template: rule key is not a string".to_string(),
+					..Default::default()
+				});
+				continue;
+			}
+		};
+
+		let name_range = parser.node_range(&rule_node);
+
+		// Validate logical ID format
+		if let Some(diag) = validate_logical_id(&rule_name, "rule", name_range, uri) {
+			errors.push(diag);
+			continue;
+		}
+
+		// Try to insert - if key exists, it's a duplicate
+		match rules.entry(rule_name.clone()) {
+			std::collections::hash_map::Entry::Occupied(entry) => {
+				let first_range = entry.get().name_range;
+				errors.push(Diagnostic {
+					range: name_range,
+					severity: Some(DiagnosticSeverity::WARNING),
+					code: Some(NumberOrString::String("WA2_CFN_DUPLICATE_KEY".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Duplicate rule key `{}`. Previous definition will be overwritten.",
+						rule_name
+					),
+					related_information: Some(vec![DiagnosticRelatedInformation {
+						location: Location {
+							uri: uri.clone(),
+							range: first_range,
+						},
+						message: "First definition here".to_string(),
+					}]),
+					..Default::default()
+				});
+
+				match parse_rule(parser, &rule_name, &rule_node, name_range, uri) {
+					Ok(rule) => {
+						*entry.into_mut() = rule;
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
+			}
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				match parse_rule(parser, &rule_name, &rule_node, name_range, uri) {
+					Ok(rule) => {
+						entry.insert(rule);
+					}
+					Err(mut diags) => {
+						errors.append(&mut diags);
+					}
+				}
+			}
+		}
+	}
+
+	if !errors.is_empty() {
+		return Err(errors);
+	}
+
+	Ok(rules)
+}
+
+fn parse_rule<P: CfnParser>(
+	parser: &P,
+	name: &str,
+	node: &P::Node,
+	name_range: Range,
+	_uri: &Url,
+) -> ParseResult<CfnRule> {
+	// A rule contains an Assertions array
+	let assertions_node = parser.object_get(node, "Assertions").ok_or_else(|| {
+		vec![Diagnostic {
+			range: name_range,
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String(
+				"WA2_CFN_RULE_MISSING_ASSERTIONS".into(),
+			)),
+			source: Some("wa2-lsp".into()),
+			message: format!("Rule `{}` must have an Assertions array", name),
+			..Default::default()
+		}]
+	})?;
+
+	// Parse assertions array
+	let mut assertions = Vec::new();
+
+	if let Some(len) = parser.array_len(&assertions_node) {
+		for i in 0..len {
+			if let Some(assertion_node) = parser.array_get(&assertions_node, i) {
+				let assertion = parse_assertion(parser, &assertion_node)?;
+				assertions.push(assertion);
+			}
+		}
+	} else {
+		return Err(vec![Diagnostic {
+			range: parser.node_range(&assertions_node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String(
+				"WA2_CFN_RULE_INVALID_ASSERTIONS".into(),
+			)),
+			source: Some("wa2-lsp".into()),
+			message: format!("Rule `{}` Assertions must be an array", name),
+			..Default::default()
+		}]);
+	}
+
+	Ok(CfnRule {
+		name: name.to_string(),
+		assertions,
+		name_range,
+	})
+}
+
+fn parse_assertion<P: CfnParser>(parser: &P, node: &P::Node) -> ParseResult<CfnAssertion> {
+	let range = parser.node_range(node);
+
+	// Extract Assert (required)
+	let assert_node = parser.object_get(node, "Assert").ok_or_else(|| {
+		vec![Diagnostic {
+			range,
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String(
+				"WA2_CFN_ASSERTION_MISSING_ASSERT".into(),
+			)),
+			source: Some("wa2-lsp".into()),
+			message: "Assertion must have an Assert condition".to_string(),
+			..Default::default()
+		}]
+	})?;
+
+	let assert_condition = parse_value(parser, &assert_node)?;
+
+	// Extract AssertDescription (optional)
+	let assert_description = parser
+		.object_get(node, "AssertDescription")
+		.and_then(|n| parser.node_as_string(&n));
+
+	Ok(CfnAssertion {
+		assert_condition,
+		assert_description,
+		range,
+	})
+}
+
 fn parse_value<P: CfnParser>(parser: &P, node: &P::Node) -> ParseResult<CfnValue> {
 	let range = parser.node_range(node);
 
@@ -852,6 +1043,7 @@ fn parse_intrinsic<P: CfnParser>(
 		IntrinsicKind::FindInMap => parse_find_in_map(parser, node, range),
 		IntrinsicKind::ToJsonString => parse_to_json_string(parser, node, range),
 		IntrinsicKind::Length => parse_length(parser, node, range),
+		IntrinsicKind::Contains => parse_contains(parser, node, range),
 	}
 }
 
@@ -1087,35 +1279,51 @@ fn parse_length<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> Parse
 	})
 }
 
+fn parse_contains<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
+	// Contains: [values, value] - checks if value is in values array
+	if let Some(len) = parser.array_len(node)
+		&& len == 2
+		&& let (Some(values_node), Some(value_node)) =
+			(parser.array_get(node, 0), parser.array_get(node, 1))
+	{
+		let values = parse_value(parser, &values_node)?;
+		let value = parse_value(parser, &value_node)?;
+
+		return Ok(CfnValue::Contains {
+			values: Box::new(values),
+			value: Box::new(value),
+			range,
+		});
+	}
+
+	Err(make_diagnostic(
+		range,
+		"WA2_CFN_MALFORMED_CONTAINS",
+		"Malformed !Contains: expected array [values, value]".to_string(),
+	))
+}
+
 fn parse_join<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
-	// Join: [delimiter, [values]]
+	// Join: [delimiter, values]
 	if let Some(len) = parser.array_len(node)
 		&& len == 2
 		&& let (Some(delim_node), Some(values_node)) =
 			(parser.array_get(node, 0), parser.array_get(node, 1))
 		&& let Some(delimiter) = parser.node_as_string(&delim_node)
 	{
-		let values_cfn = parse_value(parser, &values_node)?;
+		let values = parse_value(parser, &values_node)?;
 
-		if let CfnValue::Array(values, _) = values_cfn {
-			return Ok(CfnValue::Join {
-				delimiter,
-				values,
-				range,
-			});
-		} else {
-			return Err(make_diagnostic(
-				parser.node_range(&values_node),
-				"WA2_CFN_MALFORMED_JOIN",
-				"Malformed !Join: second argument must be an array of values".to_string(),
-			));
-		}
+		return Ok(CfnValue::Join {
+			delimiter,
+			values: Box::new(values),
+			range,
+		});
 	}
 
 	Err(make_diagnostic(
 		range,
 		"WA2_CFN_MALFORMED_JOIN",
-		"Malformed !Join: expected array [delimiter, [values]]".to_string(),
+		"Malformed !Join: expected array [delimiter, values]".to_string(),
 	))
 }
 

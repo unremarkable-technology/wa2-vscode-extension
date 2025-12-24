@@ -16,12 +16,7 @@ impl CfnTemplate {
 			.map_err(|err| vec![yaml_error_to_diagnostic(err, uri)])?;
 
 		if docs.is_empty() {
-			return Ok(CfnTemplate {
-				resources: HashMap::new(),
-				parameters: HashMap::new(),
-				conditions: HashMap::new(),
-				mappings: HashMap::new(),
-			});
+			return Ok(CfnTemplate::default());
 		}
 
 		// Use the unified parser
