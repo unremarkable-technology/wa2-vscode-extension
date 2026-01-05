@@ -1,7 +1,7 @@
 // tests/fixtures.rs
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
-use tower_lsp::lsp_types::Diagnostic;
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 use url::Url;
 use wa2lsp::spec::{
 	cfn_ir::types::CfnTemplate, spec_cache::SpecCacheManager, spec_source::SpecSource,
@@ -31,6 +31,7 @@ pub fn use_latest_cfn_spec() -> Arc<SpecStore> {
 }
 
 #[allow(unused)]
+#[allow(clippy::large_enum_variant)]
 enum ParseResult {
 	ParseError(Vec<Diagnostic>),
 	Parsed {
@@ -61,7 +62,13 @@ fn test_good_template(path: &Path) -> datatest_stable::Result<()> {
 			Err(format!("Unexpected parse failure: {:?}", diags).into())
 		}
 		ParseResult::Parsed { diags, .. } => {
-			if diags.is_empty() {
+			// Allow warnings, but no errors
+			let errors: Vec<_> = diags
+				.iter()
+				.filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+				.collect();
+
+			if errors.is_empty() {
 				Ok(())
 			} else {
 				Err(format!("Unexpected diagnostics: {:?}", diags).into())

@@ -71,7 +71,7 @@ impl fmt::Display for CfnValue {
 				if let Some(_vars) = variables {
 					write!(f, "!Sub [{}, {{...}}]", template)
 				} else {
-					write!(f, "!Sub \"{}\"", template)
+					write!(f, "!Sub {}", template)
 				}
 			}
 			CfnValue::GetAZs { region, .. } => {
@@ -190,6 +190,9 @@ impl fmt::Display for CfnValue {
 			}
 			CfnValue::Contains { values, value, .. } => {
 				write!(f, "!Contains [{}, {}]", values, value)
+			}
+			CfnValue::Transform { name, .. } => {
+				write!(f, "!Transform {}", name)
 			}
 		}
 	}

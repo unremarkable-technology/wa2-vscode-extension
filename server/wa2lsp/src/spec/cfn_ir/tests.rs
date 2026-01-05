@@ -1163,7 +1163,12 @@ Resources:
 			},
 			_,
 		) => {
-			assert_eq!(template, "my-bucket-${AWS::Region}");
+			// template is now Box<CfnValue>, check if it's a String
+			if let CfnValue::String(s, _) = &**template {
+				assert_eq!(s, "my-bucket-${AWS::Region}");
+			} else {
+				panic!("Expected template to be a String, got {:?}", template);
+			}
 			assert!(variables.is_none());
 		}
 		other => panic!("expected Sub CfnValue, got {:?}", other),

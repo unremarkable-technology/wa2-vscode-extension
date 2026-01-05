@@ -79,6 +79,15 @@ impl CfnTemplate {
 							type_str, logical_id
 						),
 					)
+				} else if type_str.contains("::") && !type_str.starts_with("AWS::") {
+					// Third-party resource type (e.g., Initech::TPS::Report, Datadog::*, etc.)
+					(
+						DiagnosticSeverity::WARNING,
+						format!(
+							"Third-party resource type `{}` cannot be validated (in resource `{}`)",
+							type_str, logical_id
+						),
+					)
 				} else {
 					(
 						DiagnosticSeverity::ERROR,
@@ -387,37 +396,34 @@ impl CfnTemplate {
 		expected: &TypeInfo,
 		symbols: &SymbolTable,
 		spec: &SpecStore,
-		resource_id: &str,
-		prop_name: &str,
+		resource_name: &str,
+		property_name: &str,
 		diagnostics: &mut Vec<Diagnostic>,
 	) {
-		// Resolve the actual type of the value
-		let actual = match type_resolver::resolve_type(value, symbols, spec) {
-			Some(t) => t,
-			None => return, // Can't resolve type (e.g., null, unknown intrinsic)
-		};
+		let actual = type_resolver::resolve_type(value, symbols, spec);
 
-		// Check if types are compatible
-		if !Self::types_compatible(&actual, expected) {
-			diagnostics.push(Diagnostic {
-				range: value.range(),
-				severity: Some(DiagnosticSeverity::ERROR),
-				code: Some(NumberOrString::String("WA2_CFN_TYPE_MISMATCH".into())),
-				source: Some("wa2-lsp".into()),
-				message: format!(
-					"Type mismatch in resource `{}` property `{}`: expected {}, got {}",
-					resource_id,
-					prop_name,
-					Self::format_type(expected),
-					Self::format_type(&actual)
-				),
-				..Default::default()
-			});
+		if let Some(actual_type) = actual {
+			// Check if types match (with coercion rules)
+			if !Self::types_compatible(expected, &actual_type, value) {
+				diagnostics.push(Diagnostic {
+					range: value.range(),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_TYPE_MISMATCH".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!(
+						"Type mismatch in resource `{}` property `{}`: expected {}, got {}",
+						resource_name,
+						property_name,
+						Self::format_type(expected),
+						Self::format_type(&actual_type)
+					),
+					..Default::default()
+				});
+			}
 		}
 	}
 
-	// Check if two types are compatible
-	fn types_compatible(actual: &TypeInfo, expected: &TypeInfo) -> bool {
+	fn types_compatible(expected: &TypeInfo, actual: &TypeInfo, value: &CfnValue) -> bool {
 		// Check collection compatibility first
 		match (&actual.collection, &expected.collection) {
 			(CollectionKind::Scalar, CollectionKind::Scalar) => {}
@@ -430,13 +436,42 @@ impl CfnTemplate {
 		match (&actual.kind, &expected.kind) {
 			// Exact match
 			(ShapeKind::Primitive(a), ShapeKind::Primitive(e)) if a == e => true,
-
 			// Any accepts anything
 			(_, ShapeKind::Any) => true,
 			(ShapeKind::Any, _) => true,
 
-			// Number type compatibility - be lenient like CloudFormation
-			// Integer/Long/Double can all be used interchangeably
+			// CloudFormation string → number coercion (for literal strings)
+			(
+				ShapeKind::Primitive(PrimitiveType::String),
+				ShapeKind::Primitive(
+					PrimitiveType::Integer | PrimitiveType::Double | PrimitiveType::Long,
+				),
+			) => {
+				matches!(value, CfnValue::String(..))
+			}
+
+			// CloudFormation string → boolean coercion (for literal strings)
+			(
+				ShapeKind::Primitive(PrimitiveType::String),
+				ShapeKind::Primitive(PrimitiveType::Boolean),
+			) => {
+				matches!(value, CfnValue::String(..))
+			}
+
+			// CloudFormation number → string coercion
+			(
+				ShapeKind::Primitive(
+					PrimitiveType::Integer | PrimitiveType::Double | PrimitiveType::Long,
+				),
+				ShapeKind::Primitive(PrimitiveType::String),
+			) => true,
+
+			// Be lenient with Ref/GetAtt
+			(ShapeKind::Primitive(PrimitiveType::String), ShapeKind::Primitive(_)) => {
+				matches!(value, CfnValue::Ref { .. } | CfnValue::GetAtt { .. })
+			}
+
+			// Number type compatibility
 			(
 				ShapeKind::Primitive(PrimitiveType::Integer),
 				ShapeKind::Primitive(PrimitiveType::Double),
@@ -462,9 +497,8 @@ impl CfnTemplate {
 				ShapeKind::Primitive(PrimitiveType::Long),
 			) => true,
 
-			// Complex types must match exactly (for now)
+			// Complex types must match exactly
 			(ShapeKind::Complex(a), ShapeKind::Complex(e)) => a == e,
-
 			_ => false,
 		}
 	}
@@ -493,7 +527,6 @@ impl CfnTemplate {
 		}
 	}
 
-	// Add this function before validate_intrinsics:
 	/// Extract ${Variable} references from a Sub template string
 	fn extract_sub_variables(template: &str) -> Vec<String> {
 		let mut variables = Vec::new();
@@ -507,8 +540,9 @@ impl CfnTemplate {
 				while let Some(&ch) = chars.peek() {
 					if ch == '}' {
 						chars.next(); // consume '}'
-						if !var_name.is_empty() {
-							variables.push(var_name);
+						let trimmed = var_name.trim(); // ← Trim whitespace
+						if !trimmed.is_empty() {
+							variables.push(trimmed.to_string()); // ← Push trimmed version
 						}
 						break;
 					}
@@ -584,112 +618,176 @@ impl CfnTemplate {
 					});
 					return; // Can't validate attribute if resource doesn't exist
 				}
-
 				// Validate attribute exists for the resource type
 				if let Some(resource_entry) = symbols.resources.get(target) {
 					let type_id = ResourceTypeId(resource_entry.resource_type.clone());
 					if let Some(resource_spec) = spec.resource_types.get(&type_id) {
-						let attr_name = AttributeName(attribute.clone());
-						// For GetAtt attributes
-						if !resource_spec.attributes.contains_key(&attr_name) {
-							let candidates = resource_spec.attributes.keys().map(|k| k.0.as_str());
-							let suggestion_data = names::find_closest(attribute, candidates);
+						// Special case: AWS::CloudFormation::Stack allows Outputs.* attributes
+						let is_stack_output = resource_entry.resource_type
+							== "AWS::CloudFormation::Stack"
+							&& attribute.starts_with("Outputs.");
 
-							let (message, suggestion) = if let Some((suggested, _)) =
-								suggestion_data
-							{
-								(
-									format!(
-										"!GetAtt attribute `{}` does not exist on resource type `{}`. Did you mean `{}`?",
-										attribute, resource_entry.resource_type, suggested
-									),
-									Some(serde_json::json!({
-										"kind": "getatt",
-										"target": target,
-										"attribute": suggested
-									})),
-								)
-							} else {
-								(
-									format!(
-										"!GetAtt attribute `{}` does not exist on resource type `{}`. This resource type has no attributes.",
-										attribute, resource_entry.resource_type
-									),
-									None,
-								)
-							};
+						// Special case: Custom resources allow any attribute
+						let is_custom_resource = resource_entry.resource_type
+							== "AWS::CloudFormation::CustomResource"
+							|| resource_entry.resource_type.starts_with("Custom::");
 
-							let mut diag = Diagnostic {
-								range: *range,
-								severity: Some(DiagnosticSeverity::ERROR),
-								code: Some(NumberOrString::String(
-									"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
-								)),
-								source: Some("wa2-lsp".into()),
-								message,
-								..Default::default()
-							};
-
-							if let Some(sugg) = suggestion {
-								diag.data = Some(sugg);
+						if !is_stack_output && !is_custom_resource {
+							let attr_name = AttributeName(attribute.clone());
+							// For GetAtt attributes
+							if !resource_spec.attributes.contains_key(&attr_name) {
+								let candidates =
+									resource_spec.attributes.keys().map(|k| k.0.as_str());
+								let suggestion_data = names::find_closest(attribute, candidates);
+								let (message, suggestion) = if let Some((suggested, _)) =
+									suggestion_data
+								{
+									(
+										format!(
+											"!GetAtt attribute `{}` does not exist on resource type `{}`. Did you mean `{}`?",
+											attribute, resource_entry.resource_type, suggested
+										),
+										Some(serde_json::json!({
+											"kind": "getatt",
+											"target": target,
+											"attribute": suggested
+										})),
+									)
+								} else {
+									(
+										format!(
+											"!GetAtt attribute `{}` does not exist on resource type `{}`. This resource type has no attributes.",
+											attribute, resource_entry.resource_type
+										),
+										None,
+									)
+								};
+								let mut diag = Diagnostic {
+									range: *range,
+									severity: Some(DiagnosticSeverity::ERROR),
+									code: Some(NumberOrString::String(
+										"WA2_CFN_INVALID_GETATT_ATTRIBUTE".into(),
+									)),
+									source: Some("wa2-lsp".into()),
+									message,
+									..Default::default()
+								};
+								if let Some(sugg) = suggestion {
+									diag.data = Some(sugg);
+								}
+								diagnostics.push(diag);
 							}
-
-							diagnostics.push(diag);
 						}
 					}
 				}
 			}
-			// In validate_intrinsics() method, add before the Array/Object cases:
 			CfnValue::Sub {
 				template,
 				variables,
 				range,
 			} => {
-				// Extract ${Variable} references from template
-				let var_refs = Self::extract_sub_variables(template);
+				// Validate the template value itself (could be an intrinsic)
+				Self::validate_intrinsics(template, symbols, diagnostics, spec);
 
-				for var_ref in var_refs {
-					// Check if variable exists in explicit variables map
-					if let Some(vars) = variables
-						&& vars.contains_key(&var_ref)
-					{
-						continue; // Found in explicit variables
-					}
+				// If template is a string, extract and validate ${Variable} references
+				if let CfnValue::String(template_str, _) = &**template {
+					let var_refs = Self::extract_sub_variables(template_str);
+					for var_ref in var_refs {
+						// Check if variable exists in explicit variables map
+						if let Some(vars) = variables
+							&& vars.contains_key(&var_ref)
+						{
+							continue; // Found in explicit variables
+						}
+						// Check if it's a valid Ref target (resource/parameter/pseudo-param)
+						// OR a GetAtt-style reference with dot notation (ResourceName.AttributeName)
+						let is_valid = if var_ref.contains('.') {
+							// Dot notation: ${Resource.Attribute}
+							let parts: Vec<&str> = var_ref.splitn(2, '.').collect();
+							if parts.len() == 2 {
+								let resource_name = parts[0];
+								let attribute_name = parts[1];
 
-					// Check if it's a valid Ref target (resource/parameter/pseudo-param)
-					if !symbols.has_ref_target(&var_ref) {
-						let mut candidates: Vec<&str> = Vec::new();
-						candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
-						candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
-						candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
+								// Check resource exists
+								if !symbols.has_resource(resource_name) {
+									false
+								} else {
+									// Resource exists - validate attribute if we have the spec
+									if let Some(resource_entry) =
+										symbols.resources.get(resource_name)
+									{
+										let type_id =
+											ResourceTypeId(resource_entry.resource_type.clone());
 
-						let suggestion_data = crate::spec::code_utils::names::find_closest(
-							&var_ref,
-							candidates.into_iter(),
-						);
+										if let Some(resource_spec) =
+											spec.resource_types.get(&type_id)
+										{
+											// Special cases where any attribute is allowed
+											let is_stack_output = resource_entry.resource_type
+												== "AWS::CloudFormation::Stack"
+												&& attribute_name.starts_with("Outputs.");
+											let is_custom_resource = resource_entry.resource_type
+												== "AWS::CloudFormation::CustomResource"
+												|| resource_entry
+													.resource_type
+													.starts_with("Custom::");
 
-						let message = if let Some((suggested, _)) = suggestion_data {
-							format!(
-								"!Sub variable `${{{}}}` does not exist. Did you mean `{}`?",
-								var_ref, suggested
-							)
+											if is_stack_output || is_custom_resource {
+												true
+											} else {
+												// Validate attribute exists
+												let attr_name =
+													AttributeName(attribute_name.to_string());
+												resource_spec.attributes.contains_key(&attr_name)
+											}
+										} else {
+											// No spec for resource type - assume valid
+											true
+										}
+									} else {
+										// Shouldn't happen since we checked has_resource
+										false
+									}
+								}
+							} else {
+								false
+							}
 						} else {
-							format!(
-								"!Sub variable `${{{}}}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
-								var_ref
-							)
+							// Simple reference: ${Resource} or ${Parameter}
+							symbols.has_ref_target(&var_ref)
 						};
 
-						diagnostics.push(Diagnostic {
-							range: *range,
-							severity: Some(DiagnosticSeverity::ERROR),
-							code: Some(NumberOrString::String(
-								"WA2_CFN_INVALID_SUB_VARIABLE".into(),
-							)),
-							source: Some("wa2-lsp".into()),
-							message,
-							..Default::default()
-						});
+						if !is_valid {
+							let mut candidates: Vec<&str> = Vec::new();
+							candidates.extend(symbols.resources.keys().map(|s| s.as_str()));
+							candidates.extend(symbols.parameters.keys().map(|s| s.as_str()));
+							candidates.extend(symbols.pseudo_parameters.keys().map(|s| s.as_str()));
+							let suggestion_data = crate::spec::code_utils::names::find_closest(
+								&var_ref,
+								candidates.into_iter(),
+							);
+							let message = if let Some((suggested, _)) = suggestion_data {
+								format!(
+									"!Sub variable `${{{}}}` does not exist. Did you mean `{}`?",
+									var_ref, suggested
+								)
+							} else {
+								format!(
+									"!Sub variable `${{{}}}` does not exist. Must reference a resource, parameter, or pseudo-parameter.",
+									var_ref
+								)
+							};
+							diagnostics.push(Diagnostic {
+								range: *range,
+								severity: Some(DiagnosticSeverity::ERROR),
+								code: Some(NumberOrString::String(
+									"WA2_CFN_INVALID_SUB_VARIABLE".into(),
+								)),
+								source: Some("wa2-lsp".into()),
+								message,
+								..Default::default()
+							});
+						}
 					}
 				}
 
@@ -882,6 +980,12 @@ impl CfnTemplate {
 			CfnValue::Contains { values, value, .. } => {
 				Self::validate_intrinsics(values, symbols, diagnostics, spec);
 				Self::validate_intrinsics(value, symbols, diagnostics, spec);
+			}
+			CfnValue::Transform {
+				name, parameters, ..
+			} => {
+				Self::validate_intrinsics(name, symbols, diagnostics, spec);
+				Self::validate_intrinsics(parameters, symbols, diagnostics, spec);
 			}
 			CfnValue::Array(items, _) => {
 				for item in items {

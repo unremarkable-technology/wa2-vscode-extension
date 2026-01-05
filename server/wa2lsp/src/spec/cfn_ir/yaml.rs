@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use saphyr::{LoadableYamlNode, MarkedYaml, Scalar, ScanError, YamlData};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use url::Url;
@@ -239,7 +237,6 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 	) -> Option<Vec<ObjectEntry<Self::Node>>> {
 		match &node.data {
 			YamlData::Mapping(map) => {
-				eprintln!("oentries: {}", map.len());
 				let entries = map
 					.iter()
 					.map(|(k, v)| {

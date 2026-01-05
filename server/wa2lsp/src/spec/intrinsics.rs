@@ -23,6 +23,7 @@ pub enum IntrinsicKind {
 	ToJsonString,
 	Length,
 	Contains,
+	Transform,
 }
 
 /// Definition of an intrinsic function
@@ -134,6 +135,11 @@ pub static INTRINSICS: &[IntrinsicDef] = &[
 		kind: IntrinsicKind::Contains,
 		json_key: "Fn::Contains",
 		yaml_tag: "Contains",
+	},
+	IntrinsicDef {
+		kind: IntrinsicKind::Transform,
+		json_key: "Fn::Transform",
+		yaml_tag: "Transform",
 	},
 ];
 

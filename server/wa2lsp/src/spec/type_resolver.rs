@@ -202,7 +202,7 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 			kind: ShapeKind::Primitive(PrimitiveType::String),
 			collection: CollectionKind::Scalar,
 		}),
-		
+
 		CfnValue::Length { .. } => Some(TypeInfo {
 			kind: ShapeKind::Primitive(PrimitiveType::Integer),
 			collection: CollectionKind::Scalar,
@@ -211,6 +211,14 @@ pub fn resolve_type(value: &CfnValue, symbols: &SymbolTable, spec: &SpecStore) -
 		CfnValue::Contains { .. } => {
 			// Contains returns Boolean (condition)
 			None // Like other condition functions, doesn't produce usable property values
+		}
+
+		CfnValue::Transform { .. } => {
+			// Transform can return any type depending on the macro
+			Some(TypeInfo {
+				kind: ShapeKind::Any,
+				collection: CollectionKind::Scalar,
+			})
 		}
 	}
 }

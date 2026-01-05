@@ -124,7 +124,7 @@ pub fn parse_template<P: CfnParser>(
 		.map(|node| parse_rules(parser, &node, uri))
 		.transpose()?
 		.unwrap_or_default();
-	
+
 	Ok(CfnTemplate {
 		resources,
 		parameters,
@@ -1044,6 +1044,7 @@ fn parse_intrinsic<P: CfnParser>(
 		IntrinsicKind::ToJsonString => parse_to_json_string(parser, node, range),
 		IntrinsicKind::Length => parse_length(parser, node, range),
 		IntrinsicKind::Contains => parse_contains(parser, node, range),
+		IntrinsicKind::Transform => parse_transform(parser, node, range),
 	}
 }
 
@@ -1303,6 +1304,48 @@ fn parse_contains<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> Par
 	))
 }
 
+fn parse_transform<P: CfnParser>(
+	parser: &P,
+	node: &P::Node,
+	range: Range,
+) -> ParseResult<CfnValue> {
+	// Transform expects an object with Name and Parameters
+	// { Name: "MacroName", Parameters: {...} }
+	if let Some(_entries) = parser.object_entries(node) {
+		let name_node = parser.object_get(node, "Name");
+		let params_node = parser.object_get(node, "Parameters");
+
+		let name = if let Some(n) = name_node {
+			parse_value(parser, &n)?
+		} else {
+			return Err(make_diagnostic(
+				range,
+				"WA2_CFN_MALFORMED_TRANSFORM",
+				"Malformed !Transform: missing required 'Name' field".to_string(),
+			));
+		};
+
+		let parameters = if let Some(p) = params_node {
+			parse_value(parser, &p)?
+		} else {
+			// Parameters is optional, default to empty object
+			CfnValue::Object(HashMap::new(), range)
+		};
+
+		return Ok(CfnValue::Transform {
+			name: Box::new(name),
+			parameters: Box::new(parameters),
+			range,
+		});
+	}
+
+	Err(make_diagnostic(
+		range,
+		"WA2_CFN_MALFORMED_TRANSFORM",
+		"Malformed !Transform: expected object with Name and Parameters".to_string(),
+	))
+}
+
 fn parse_join<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
 	// Join: [delimiter, values]
 	if let Some(len) = parser.array_len(node)
@@ -1482,9 +1525,9 @@ fn parse_or<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResu
 
 fn parse_sub<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseResult<CfnValue> {
 	// String form: "template with ${Var}"
-	if let Some(template) = parser.node_as_string(node) {
+	if let Some(template_str) = parser.node_as_string(node) {
 		return Ok(CfnValue::Sub {
-			template,
+			template: Box::new(CfnValue::String(template_str, parser.node_range(node))),
 			variables: None,
 			range,
 		});
@@ -1495,8 +1538,9 @@ fn parse_sub<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseRes
 		&& len == 2
 		&& let (Some(template_node), Some(vars_node)) =
 			(parser.array_get(node, 0), parser.array_get(node, 1))
-		&& let Some(template) = parser.node_as_string(&template_node)
 	{
+		let template_value = parse_value(parser, &template_node)?;
+
 		// Variables must be an object
 		let variables = if parser.object_entries(&vars_node).is_some() {
 			let vars_value = parse_value(parser, &vars_node)?;
@@ -1506,17 +1550,19 @@ fn parse_sub<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseRes
 		};
 
 		return Ok(CfnValue::Sub {
-			template,
+			template: Box::new(template_value),
 			variables,
 			range,
 		});
 	}
 
-	Err(make_diagnostic(
+	// Intrinsic/other value form: !Sub wrapping another value that resolves to string
+	let template_value = parse_value(parser, node)?;
+	Ok(CfnValue::Sub {
+		template: Box::new(template_value),
+		variables: None,
 		range,
-		"WA2_CFN_MALFORMED_SUB",
-		"Malformed !Sub: expected string or array [template, variables]".to_string(),
-	))
+	})
 }
 
 /// Validate CloudFormation logical ID format

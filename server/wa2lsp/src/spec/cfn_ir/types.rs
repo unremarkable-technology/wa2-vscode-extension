@@ -101,7 +101,7 @@ pub enum CfnValue {
 
 	// !Sub / { "Fn::Sub": "template string" } or { "Fn::Sub": ["template", {vars}] }
 	Sub {
-		template: String,
+		template: Box<CfnValue>,
 		variables: Option<HashMap<String, CfnValue>>, // For long form with explicit variables
 		range: Range,
 	},
@@ -210,6 +210,12 @@ pub enum CfnValue {
 		value: Box<CfnValue>,  // Value to search for
 		range: Range,
 	},
+
+	Transform {
+		name: Box<CfnValue>,
+		parameters: Box<CfnValue>,
+		range: Range,
+	},
 }
 
 impl CfnValue {
@@ -242,6 +248,7 @@ impl CfnValue {
 			CfnValue::ToJsonString { range, .. } => *range,
 			CfnValue::Length { range, .. } => *range,
 			CfnValue::Contains { range, .. } => *range,
+			CfnValue::Transform { range, .. } => *range,
 		}
 	}
 
