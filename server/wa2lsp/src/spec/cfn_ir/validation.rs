@@ -55,6 +55,33 @@ impl CfnTemplate {
 			let type_id = ResourceTypeId(resource.resource_type.clone());
 			let type_str = &resource.resource_type;
 
+			// Skip ForEach constructs - but validate they have the required transform
+			if type_str.starts_with("AWS::LanguageExtensions::ForEach") {
+				// Check if AWS::LanguageExtensions transform is present
+				let has_language_extensions = self
+					.transform
+					.as_ref()
+					.map(|transforms| transforms.iter().any(|t| t == "AWS::LanguageExtensions"))
+					.unwrap_or(false);
+
+				if !has_language_extensions {
+					diagnostics.push(Diagnostic {
+						range: resource.logical_id_range,
+						severity: Some(DiagnosticSeverity::ERROR),
+						code: Some(NumberOrString::String(
+							"WA2_CFN_FOREACH_REQUIRES_TRANSFORM".into(),
+						)),
+						source: Some("wa2-lsp".into()),
+						message: format!(
+							"Fn::ForEach `{}` requires Transform: AWS::LanguageExtensions",
+							logical_id
+						),
+						..Default::default()
+					});
+				}
+				continue; // Don't validate as regular resource
+			}
+
 			// Skip validation for SAM/Serverless resources (transform-based)
 			if type_str.starts_with("AWS::Serverless::") || type_str.starts_with("AWS::SAM::") {
 				continue;

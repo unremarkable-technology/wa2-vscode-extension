@@ -125,12 +125,34 @@ pub fn parse_template<P: CfnParser>(
 		.transpose()?
 		.unwrap_or_default();
 
+	// Parse Transform (can be string or array of strings)
+	let transform = parser.get_section(root, "Transform").and_then(|node| {
+		if let Some(s) = parser.node_as_string(&node) {
+			// Single transform
+			Some(vec![s])
+		} else if let Some(len) = parser.array_len(&node) {
+			// Array of transforms
+			let mut transforms = Vec::new();
+			for i in 0..len {
+				if let Some(item) = parser.array_get(&node, i)
+					&& let Some(s) = parser.node_as_string(&item)
+				{
+					transforms.push(s);
+				}
+			}
+			Some(transforms)
+		} else {
+			None
+		}
+	});
+
 	Ok(CfnTemplate {
 		resources,
 		parameters,
 		conditions,
 		mappings,
 		rules,
+		transform,
 	})
 }
 
@@ -178,6 +200,21 @@ fn parse_resources<P: CfnParser>(
 		if let Some(diag) = validate_logical_id(&logical_id, "resource", key_range, uri) {
 			errors.push(diag);
 			continue; // Skip parsing this resource
+		}
+
+		// Check if this is a ForEach construct
+		if logical_id.starts_with("Fn::ForEach::") {
+			// Parse as ForEach, not as regular resource
+			match parse_for_each_resource(parser, &logical_id, &resource_node, key_range, uri) {
+				Ok(for_each_resource) => {
+					// Add as a special resource type
+					resources.insert(logical_id.clone(), for_each_resource);
+				}
+				Err(mut diags) => {
+					errors.append(&mut diags);
+				}
+			}
+			continue; // Skip normal resource parsing
 		}
 
 		// Try to insert - if key exists, it's a duplicate
@@ -233,6 +270,125 @@ fn parse_resources<P: CfnParser>(
 	}
 
 	Ok(resources)
+}
+
+fn parse_for_each_resource<P: CfnParser>(
+	parser: &P,
+	logical_id: &str,
+	node: &P::Node,
+	name_range: Range,
+	uri: &Url,
+) -> ParseResult<CfnResource> {
+	// ForEach structure: [Identifier, Collection, TemplateFragment]
+	let len = parser.array_len(node);
+
+	if len != Some(3) {
+		return Err(vec![Diagnostic {
+			range: parser.node_range(node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: format!(
+				"Malformed Fn::ForEach `{}`: expected array [Identifier, Collection, TemplateFragment]",
+				logical_id
+			),
+			..Default::default()
+		}]);
+	}
+
+	let identifier_node = parser.array_get(node, 0).ok_or_else(|| {
+		vec![Diagnostic {
+			range: parser.node_range(node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: "ForEach: missing Identifier".to_string(),
+			..Default::default()
+		}]
+	})?;
+
+	let collection_node = parser.array_get(node, 1).ok_or_else(|| {
+		vec![Diagnostic {
+			range: parser.node_range(node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: "ForEach: missing Collection".to_string(),
+			..Default::default()
+		}]
+	})?;
+
+	let fragment_node = parser.array_get(node, 2).ok_or_else(|| {
+		vec![Diagnostic {
+			range: parser.node_range(node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: "ForEach: missing TemplateFragment".to_string(),
+			..Default::default()
+		}]
+	})?;
+
+	// Parse identifier (must be string)
+	let _identifier = parser.node_as_string(&identifier_node).ok_or_else(|| {
+		vec![Diagnostic {
+			range: parser.node_range(&identifier_node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: "ForEach Identifier must be a string".to_string(),
+			..Default::default()
+		}]
+	})?;
+
+	// Parse collection (can be array or intrinsic) - validates it's a valid value
+	let _collection = parse_value(parser, &collection_node)?;
+
+	// Parse template fragment (must be an object with one entry)
+	let fragment_entries = parser.object_entries(&fragment_node).ok_or_else(|| {
+		vec![Diagnostic {
+			range: parser.node_range(&fragment_node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: "ForEach TemplateFragment must be an object".to_string(),
+			..Default::default()
+		}]
+	})?;
+
+	if fragment_entries.len() != 1 {
+		return Err(vec![Diagnostic {
+			range: parser.node_range(&fragment_node),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: Some(NumberOrString::String("WA2_CFN_MALFORMED_FOREACH".into())),
+			source: Some("wa2-lsp".into()),
+			message: format!(
+				"ForEach TemplateFragment must contain exactly one resource definition, found {}",
+				fragment_entries.len()
+			),
+			..Default::default()
+		}]);
+	}
+
+	// Parse the resource inside the fragment
+	let (resource_key, resource_value_node) = &fragment_entries[0];
+	let mut resource = parse_resource(
+		parser,
+		resource_key,
+		resource_value_node,
+		parser.node_range(resource_value_node),
+		uri,
+	)?;
+
+	// Override the logical ID and type to indicate this is a ForEach
+	resource.logical_id = logical_id.to_string();
+	resource.resource_type = format!(
+		"AWS::LanguageExtensions::ForEach<{}>",
+		resource.resource_type
+	);
+	resource.logical_id_range = name_range;
+
+	Ok(resource)
 }
 
 fn parse_resource<P: CfnParser>(
@@ -1206,7 +1362,30 @@ fn parse_import_value<P: CfnParser>(
 	node: &P::Node,
 	range: Range,
 ) -> ParseResult<CfnValue> {
+	// ImportValue expects a string or intrinsic that returns a string
+	// NOT an array or another ImportValue
+
+	// Check if it's an array (invalid)
+	if parser.array_len(node).is_some() {
+		return Err(make_diagnostic(
+			range,
+			"WA2_CFN_MALFORMED_IMPORT_VALUE",
+			"Malformed !ImportValue: expected string or intrinsic, not array".to_string(),
+		));
+	}
+
 	let name = parse_value(parser, node)?;
+
+	// Check if nested ImportValue (invalid)
+	if matches!(name, CfnValue::ImportValue { .. }) {
+		return Err(make_diagnostic(
+			range,
+			"WA2_CFN_MALFORMED_IMPORT_VALUE",
+			"Malformed !ImportValue: cannot nest ImportValue inside another ImportValue"
+				.to_string(),
+		));
+	}
+
 	Ok(CfnValue::ImportValue {
 		name: Box::new(name),
 		range,
@@ -1568,6 +1747,11 @@ fn parse_sub<P: CfnParser>(parser: &P, node: &P::Node, range: Range) -> ParseRes
 /// Validate CloudFormation logical ID format
 /// Must be alphanumeric (a-zA-Z0-9)
 fn validate_logical_id(id: &str, id_type: &str, range: Range, _uri: &Url) -> Option<Diagnostic> {
+	// Allow Fn::ForEach::* pattern (AWS::LanguageExtensions)
+	if id.starts_with("Fn::ForEach::") {
+		return None;
+	}
+
 	// CloudFormation logical IDs must be alphanumeric
 	if !id.chars().all(|c| c.is_ascii_alphanumeric()) {
 		return Some(Diagnostic {

@@ -208,25 +208,26 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 
 		// Check for long-form like "Ref: MyBucket"
 		if let Some(entries) = self.object_entries(node)
-			&& entries.len() == 1 {
-				let (key, value_node) = &entries[0];
-				if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
-					return Ok(Some((intrinsic.kind, value_node.clone())));
-				}
-
-				// Check if it's an unknown Fn::* intrinsic
-				if key.starts_with("Fn::") {
-					let range = self.node_range(node);
-					return Err(vec![Diagnostic {
-						range,
-						severity: Some(DiagnosticSeverity::ERROR),
-						code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_INTRINSIC".into())),
-						source: Some("wa2-lsp".into()),
-						message: format!("Unknown CloudFormation intrinsic function: {}", key),
-						..Default::default()
-					}]);
-				}
+			&& entries.len() == 1
+		{
+			let (key, value_node) = &entries[0];
+			if let Some(intrinsic) = intrinsics::get_intrinsic_by_json_key(key) {
+				return Ok(Some((intrinsic.kind, value_node.clone())));
 			}
+
+			// Check if it's an unknown Fn::* intrinsic
+			if key.starts_with("Fn::") {
+				let range = self.node_range(node);
+				return Err(vec![Diagnostic {
+					range,
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("WA2_CFN_UNKNOWN_INTRINSIC".into())),
+					source: Some("wa2-lsp".into()),
+					message: format!("Unknown CloudFormation intrinsic function: {}", key),
+					..Default::default()
+				}]);
+			}
+		}
 
 		Ok(None)
 	}

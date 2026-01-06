@@ -1,29 +1,42 @@
 // server/wa2lsp/src/spec/intrinsics.rs
 //! Declarative registry of CloudFormation intrinsic functions
 
+// ordered same as docs for ease of comparison
+// https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/intrinsic-function-reference.html
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntrinsicKind {
-	Ref,
-	GetAtt,
-	Sub,
-	GetAZs,
-	Join,
-	Select,
-	If,
-	Equals,
-	Not,
-	And,
-	Or,
-	Condition,
 	Base64,
-	Split,
 	Cidr,
-	ImportValue,
+
+	// Condition functions
+	Condition,
+	And,
+	Equals,
+	If,
+	Not,
+	Or,
+
 	FindInMap,
-	ToJsonString,
+	//ForEach,
+	GetAtt,
+	GetAZs,
+	ImportValue,
+	Join,
 	Length,
-	Contains,
+	Select,
+	Split,
+	Sub,
+	ToJsonString,
 	Transform,
+	Ref,
+
+	// Rule functions (condition functions+)
+	Contains,
+	// EachMemberEquals,
+	// EachMemberIn,
+	// RefAll,
+	// ValueOf,
+	// ValueOfAll,
 }
 
 /// Definition of an intrinsic function

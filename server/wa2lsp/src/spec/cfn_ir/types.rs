@@ -11,6 +11,7 @@ pub struct CfnTemplate {
 	pub conditions: HashMap<String, CfnCondition>,
 	pub mappings: HashMap<String, CfnMapping>,
 	pub rules: HashMap<String, CfnRule>,
+	pub transform: Option<Vec<String>>,
 }
 
 /// A CloudFormation resource with position tracking
