@@ -9,3 +9,6 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+server/wa2lsp/src/**
+server/wa2lsp/target/debug/**
+!bin/wa2lsp

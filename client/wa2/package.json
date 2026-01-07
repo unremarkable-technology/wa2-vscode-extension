@@ -1,8 +1,8 @@
 {
 	"name": "wa2",
 	"displayName": "WA2",
-	"description": "Well-Architected 2 features, including cross-stack validation for CloudFormation",
-	"version": "0.0.6",
+	"description": "Fast CloudFormation validation powered by Rust",
+	"version": "0.0.7",
 	"engines": {
 		"vscode": "^1.95.0"
 	},
@@ -17,8 +17,10 @@
 	},
 	"main": "./out/extension.js",
 	"scripts": {
-		"vscode:prepublish": "npm run compile",
+		"vscode:prepublish": "npm run compile && npm run copy-server",
 		"compile": "tsc -p ./",
+		"build-server": "cd ../../server/wa2lsp && cargo build --release",
+		"copy-server": "mkdir -p bin && cp \"${CARGO_TARGET_DIR:-../../server/wa2lsp/target}/release/wa2lsp\" bin/ || echo 'Binary not found, please run: npm run build-server first'",
 		"watch": "tsc -watch -p ./",
 		"pretest": "npm run compile && npm run lint",
 		"lint": "eslint src",

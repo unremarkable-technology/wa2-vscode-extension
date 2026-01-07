@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import {
 	LanguageClient,
 	LanguageClientOptions,
@@ -9,8 +10,20 @@ import {
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-	// For now assume 'wa2lsp' is on PATH.
-	const serverCommand = 'wa2lsp';
+	// Try bundled binary first, fall back to PATH
+	const binaryName = process.platform === 'win32' ? 'wa2lsp.exe' : 'wa2lsp';
+	const bundledBinary = path.join(context.extensionPath, 'bin', binaryName);
+
+	let serverCommand: string;
+
+	if (fs.existsSync(bundledBinary)) {
+		serverCommand = bundledBinary;
+		console.log(`WA2: Using bundled LSP server at ${bundledBinary}`);
+	} else {
+		// Fall back to PATH (for development)
+		serverCommand = binaryName;
+		console.log(`WA2: Using ${binaryName} from PATH`);
+	}
 
 	const serverOptions: ServerOptions = {
 		command: serverCommand,
@@ -34,8 +47,13 @@ export function activate(context: vscode.ExtensionContext) {
 		clientOptions
 	);
 
-	// Start the client, but do NOT push the promise to subscriptions
-	client.start();
+	// Start the client
+	client.start().then(() => {
+		console.log('WA2: Language server started successfully');
+	}).catch(err => {
+		vscode.window.showErrorMessage(`WA2: Failed to start language server: ${err.message}`);
+		console.error('WA2: Language server error:', err);
+	});
 
 	// Properly stop the client on extension deactivation
 	context.subscriptions.push({
@@ -49,4 +67,3 @@ export async function deactivate(): Promise<void> {
 	}
 	await client.stop();
 }
-

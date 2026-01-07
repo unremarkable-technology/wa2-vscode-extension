@@ -1,11 +1,22 @@
-## ensure our server is up to date
-cargo build --release
+#!/bin/bash
+set -e
 
-# Marketplace does not allow re-uploading the same version.
+echo "Building wa2lsp server..."
+cd ../../server/wa2lsp
+cargo build --release
+cd ../../client/wa2
+
+echo "Copying binary to bin/..."
+mkdir -p bin
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-../../server/wa2lsp/target}"
+cp "$CARGO_TARGET_DIR/release/wa2lsp" bin/
+
+echo "Bumping version..."
 npm version patch
 
-# Package the extension
+echo "Packaging extension..."
 npx @vscode/vsce package
 
-# Publish to the Marketplace
-echo upload at https://marketplace.visualstudio.com/manage/publishers/FigmentEngineLtd
+echo ""
+echo "✅ Extension packaged successfully!"
+echo "📦 Upload at: https://marketplace.visualstudio.com/manage/publishers/FigmentEngineLtd"
