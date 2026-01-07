@@ -50,15 +50,15 @@ jobs:
         working-directory: server/wa2lsp
         run: cargo build --release --target ${{ matrix.target }}
       
-      - name: Debug - List target directory
+      - name: Debug - Find the binary
         run: |
-          echo "Listing target directory:"
-          ls -la server/wa2lsp/target/ || echo "target/ doesn't exist"
-          echo "Listing target/${{ matrix.target }}:"
-          ls -la server/wa2lsp/target/${{ matrix.target }}/ || echo "target/${{ matrix.target }}/ doesn't exist"
-          echo "Listing target/${{ matrix.target }}/release:"
-          ls -la server/wa2lsp/target/${{ matrix.target }}/release/ || echo "target/${{ matrix.target }}/release/ doesn't exist"
-      
+          echo "=== Searching for wa2lsp binary ==="
+          find . -name "wa2lsp" -o -name "wa2lsp.exe" 2>/dev/null || echo "Binary not found"
+          echo "=== Listing ~/.cargo ==="
+          ls -la ~/.cargo/ || echo "~/.cargo doesn't exist"
+          echo "=== Listing server/wa2lsp ==="
+          ls -laR server/wa2lsp/ | head -100
+
       - name: Copy binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
