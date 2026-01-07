@@ -52,18 +52,16 @@ jobs:
       
       - name: Copy binary (Unix)
         if: matrix.os != 'windows-latest'
-        working-directory: client/wa2
         run: |
-          mkdir -p bin
-          cp ../../server/wa2lsp/target/${{ matrix.target }}/release/wa2lsp bin/
+          mkdir -p client/wa2/bin
+          cp server/wa2lsp/target/${{ matrix.target }}/release/wa2lsp client/wa2/bin/
       
       - name: Copy binary (Windows)
         if: matrix.os == 'windows-latest'
-        working-directory: client/wa2
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path bin
-          Copy-Item ../../server/wa2lsp/target/${{ matrix.target }}/release/wa2lsp.exe bin/
+          New-Item -ItemType Directory -Force -Path client/wa2/bin
+          Copy-Item server/wa2lsp/target/${{ matrix.target }}/release/wa2lsp.exe client/wa2/bin/
       
       - name: Install npm dependencies
         working-directory: client/wa2
