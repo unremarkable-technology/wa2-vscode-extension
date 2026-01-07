@@ -50,6 +50,21 @@ jobs:
         working-directory: server/wa2lsp
         run: cargo build --release --target ${{ matrix.target }}
       
+      - name: Debug - List target directory
+        run: |
+          echo "Listing target directory:"
+          ls -la server/wa2lsp/target/ || echo "target/ doesn't exist"
+          echo "Listing target/${{ matrix.target }}:"
+          ls -la server/wa2lsp/target/${{ matrix.target }}/ || echo "target/${{ matrix.target }}/ doesn't exist"
+          echo "Listing target/${{ matrix.target }}/release:"
+          ls -la server/wa2lsp/target/${{ matrix.target }}/release/ || echo "target/${{ matrix.target }}/release/ doesn't exist"
+      
+      - name: Copy binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p client/wa2/bin
+          cp server/wa2lsp/target/${{ matrix.target }}/release/wa2lsp client/wa2/bin/
+
       - name: Copy binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
