@@ -50,14 +50,22 @@ jobs:
         working-directory: server/wa2lsp
         run: cargo build --release --target ${{ matrix.target }}
       
-      - name: Debug - Find the binary
+      - name: Debug - Find the binary (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
           echo "=== Searching for wa2lsp binary ==="
-          find . -name "wa2lsp" -o -name "wa2lsp.exe" 2>/dev/null || echo "Binary not found"
-          echo "=== Listing ~/.cargo ==="
-          ls -la ~/.cargo/ || echo "~/.cargo doesn't exist"
-          echo "=== Listing server/wa2lsp ==="
-          ls -laR server/wa2lsp/ | head -100
+          find . -name "wa2lsp" 2>/dev/null || echo "Binary not found"
+          echo "=== Target directory contents ==="
+          ls -la target/${{ matrix.target }}/release/ || echo "Release directory not found"
+      
+      - name: Debug - Find the binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Write-Host "=== Searching for wa2lsp.exe ==="
+          Get-ChildItem -Path . -Recurse -Filter "wa2lsp.exe" -ErrorAction SilentlyContinue | Select-Object FullName
+          Write-Host "=== Target directory contents ==="
+          Get-ChildItem -Path "target\${{ matrix.target }}\release" -ErrorAction SilentlyContinue
 
       - name: Copy binary (Unix)
         if: matrix.os != 'windows-latest'
