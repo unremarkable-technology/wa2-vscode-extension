@@ -2,7 +2,7 @@
 	"name": "wa2",
 	"displayName": "WA2",
 	"description": "Fast CloudFormation validation powered by Rust",
-	"version": "0.0.7",
+	"version": "0.0.11",
 	"engines": {
 		"vscode": "^1.95.0"
 	},
