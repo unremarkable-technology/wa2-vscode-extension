@@ -75,12 +75,12 @@ Resources:
       Handler: index.handler
       Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/LambdaExecutionRole"
       
-		# Required Code property
+      # Required Code property
       Code:
         ZipFile: |
           def handler(event, context):
               return {'statusCode': 200, 'body': 'Hello from Lambda'}
-				  
+
       # If with Condition reference: Conditional timeout
       Timeout: !If [ShouldUsePremiumTier, 300, 30]
       

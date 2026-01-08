@@ -11,12 +11,17 @@ mkdir -p bin
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-../../server/wa2lsp/target}"
 cp "$CARGO_TARGET_DIR/release/wa2lsp" bin/
 
-echo "Bumping version..."
-npm version patch
+echo "Current version: $(node -p "require('./package.json').version")"
+read -p "Bump to (patch/minor/major): " bump_type
+npm version $bump_type
+
+NEW_VERSION=$(node -p "require('./package.json').version")
+echo "New version: $NEW_VERSION"
 
 echo "Packaging extension..."
 npx @vscode/vsce package
 
 echo ""
 echo "✅ Extension packaged successfully!"
-echo "📦 Upload at: https://marketplace.visualstudio.com/manage/publishers/FigmentEngineLtd"
+echo "📦 To publish: npx @vscode/vsce publish"
+echo "🏷️  Or create git tag: git tag v$NEW_VERSION && git push origin v$NEW_VERSION"
