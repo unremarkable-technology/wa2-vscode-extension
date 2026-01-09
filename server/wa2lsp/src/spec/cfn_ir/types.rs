@@ -113,7 +113,7 @@ pub enum CfnValue {
 		range: Range,
 	},
 
-	/// !Join / { "Fn::Join": [delimiter, [values]] }
+	/// !Join / { "Fn::Join": [delimiter, values] }
 	Join {
 		delimiter: String,
 		values: Box<CfnValue>,
@@ -142,7 +142,7 @@ pub enum CfnValue {
 		range: Range,
 	},
 
-	/// !Not / { "Fn::Not": [condition] }
+	/// !Not / { "Fn::Not": [condition, range] }
 	Not {
 		condition: Box<CfnValue>,
 		range: Range,

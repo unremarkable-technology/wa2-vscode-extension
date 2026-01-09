@@ -11,3 +11,10 @@ debug = 1           # enough for backtraces, smaller than 2
 lto = false
 codegen-units = 256 # more parallelism, worse perf but faster compile
 incremental = true  # default in dev, but make it explicit if you like
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

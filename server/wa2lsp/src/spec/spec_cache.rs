@@ -51,7 +51,7 @@ struct SpecCacheMeta {
 /// Responsibilities:
 /// - Decide whether to use the existing cached JSON or re-download.
 /// - Persist the raw JSON and small metadata file.
-/// - Build a SpecStore from the JSON and return it as Arc<SpecStore>.
+/// - Build a SpecStore from the JSON and return it as `Arc<SpecStore>`.
 #[derive(Clone)]
 pub struct SpecCacheManager {
 	source: SpecSource,

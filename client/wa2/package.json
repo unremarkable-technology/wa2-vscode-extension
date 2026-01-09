@@ -2,7 +2,7 @@
 	"name": "wa2",
 	"displayName": "WA2",
 	"description": "Fast CloudFormation validation powered by Rust",
-	"version": "0.0.12",
+	"version": "0.0.13",
 	"engines": {
 		"vscode": "^1.95.0"
 	},
@@ -17,8 +17,9 @@
 	},
 	"main": "./out/extension.js",
 	"scripts": {
-		"vscode:prepublish": "npm run compile && npm run copy-server",
+		"vscode:prepublish": "npm run bundle && npm run copy-server",
 		"compile": "tsc -p ./",
+		"bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
 		"build-server": "cd ../../server/wa2lsp && cargo build --release",
 		"copy-server": "mkdir -p bin && cp \"${CARGO_TARGET_DIR:-../../server/wa2lsp/target}/release/wa2lsp\" bin/ || echo 'Binary not found, please run: npm run build-server first'",
 		"watch": "tsc -watch -p ./",
@@ -32,6 +33,7 @@
 		"@types/vscode": "^1.95.0",
 		"@vscode/test-cli": "^0.0.12",
 		"@vscode/test-electron": "^2.5.2",
+		"esbuild": "^0.27.2",
 		"eslint": "^9.39.1",
 		"typescript": "^5.9.3",
 		"typescript-eslint": "^8.46.3"

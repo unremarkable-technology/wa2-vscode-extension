@@ -12,11 +12,12 @@ CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-../../server/wa2lsp/target}"
 cp "$CARGO_TARGET_DIR/release/wa2lsp" bin/
 
 echo "Current version: $(node -p "require('./package.json').version")"
-read -p "Bump to (patch/minor/major): " bump_type
-npm version $bump_type
+#read -p "Bump to (patch/minor/major): " bump_type
+#npm version $bump_type
 
-NEW_VERSION=$(node -p "require('./package.json').version")
-echo "New version: $NEW_VERSION"
+NEW_VERSION=0.0.13
+#NEW_VERSION=$(node -p "require('./package.json').version")
+#echo "New version: $NEW_VERSION"
 
 echo "Packaging extension..."
 npx @vscode/vsce package
