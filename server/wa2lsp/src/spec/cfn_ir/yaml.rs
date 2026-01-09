@@ -255,4 +255,70 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 			_ => None,
 		}
 	}
+
+	fn word_at_position(&self, root: &Self::Node, position: Position) -> Option<String> {
+		// Recursively search for a string node that contains this position
+		fn search_node(node: &MarkedYaml, position: Position, depth: usize) -> Option<String> {
+			// Check if position is within this node's range
+			let start_marker = node.span.start;
+			let end_marker = node.span.end;
+
+			let start_line = start_marker.line().saturating_sub(1) as u32;
+			let start_col = start_marker.col() as u32;
+			let end_line = end_marker.line().saturating_sub(1) as u32;
+			let end_col = end_marker.col() as u32;
+
+			// Check if position is within range
+			if position.line < start_line || position.line > end_line {
+				return None;
+			}
+			if position.line == start_line && position.character < start_col {
+				return None;
+			}
+			if position.line == end_line && position.character > end_col {
+				return None;
+			}
+
+			// Position is within this node - check what type it is
+			match &node.data {
+				YamlData::Value(Scalar::String(s)) => {
+					Some(s.to_string())
+				}
+				YamlData::Sequence(seq) => {
+					for item in seq {
+						if let Some(word) = search_node(item, position, depth + 1) {
+							return Some(word);
+						}
+					}
+					None
+				}
+				YamlData::Mapping(map) => {
+					for (key, value) in map {
+						if let Some(word) = search_node(key, position, depth + 1) {
+							return Some(word);
+						}
+						if let Some(word) = search_node(value, position, depth + 1) {
+							return Some(word);
+						}
+					}
+					None
+				}
+				YamlData::Tagged(_, inner) => {
+					// For tagged nodes (like !Ref), the inner value might have invalid range
+					// So we extract it directly if it's a string
+					match &inner.data {
+						YamlData::Value(Scalar::String(s)) => {
+							Some(s.to_string())
+						}
+						_ => search_node(inner, position, depth + 1),
+					}
+				}
+				_ => {
+					None
+				}
+			}
+		}
+
+		search_node(root, position, 0)
+	}
 }

@@ -1,11 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
+use saphyr::LoadableYamlNode;
 use tower_lsp::lsp_types::{
 	Diagnostic, DiagnosticSeverity, Location, NumberOrString, Position, Range, Url,
 };
 
 use crate::spec::{
-	cfn_ir::types::{CfnTemplate, CfnValue},
+	cfn_ir::{
+		parser::CfnParser,
+		types::CfnTemplate,
+	},
 	spec_store::SpecStore,
 	symbol_table::SymbolTable,
 };
@@ -196,138 +200,65 @@ impl CoreEngine {
 	pub fn goto_definition(&self, uri: &Url, position: Position) -> Option<Location> {
 		let doc = self.docs.get(uri)?;
 
-		// Parse template based on format
-		let template = match doc.format {
-			DocumentFormat::Json => CfnTemplate::from_json(&doc.text, uri),
-			DocumentFormat::Yaml => CfnTemplate::from_yaml(&doc.text, uri),
-		}
-		.ok()?;
+		// Parse template and get root node
+		let (word, template) = match doc.format {
+			DocumentFormat::Json => {
+				let parse_result =
+					jsonc_parser::parse_to_ast(&doc.text, &Default::default(), &Default::default())
+						.ok()?;
+				let root = parse_result.value?;
+				let parser = crate::spec::cfn_ir::json::JsonCfnParser::new(&doc.text);
+				let word = parser.word_at_position(&root, position)?;
+				let template = CfnTemplate::from_json(&doc.text, uri).ok()?;
+				(word, template)
+			}
+			DocumentFormat::Yaml => {
+				let docs = saphyr::MarkedYaml::load_from_str(&doc.text).ok()?;
+
+				if docs.is_empty() {
+					return None;
+				}
+
+				let parser = crate::spec::cfn_ir::yaml::YamlCfnParser::new(&doc.text);
+				let word = parser.word_at_position(&docs[0], position);
+
+				let word = word?;
+
+				let template = CfnTemplate::from_yaml(&doc.text, uri).ok()?;
+				(word, template)
+			}
+		};
 
 		// Build symbol table
 		let symbols = SymbolTable::from_template(&template);
 
-		// Find what's at the cursor position
-		let target = find_ref_or_getatt_at_position(&template, position)?;
-
-		// Look up the target in symbol table
-		if let Some(resource) = symbols.resources.get(&target) {
+		// Look up the word (handle GetAtt dot notation)
+		let lookup_word = word.split('.').next().unwrap_or(&word);
+		if let Some(resource) = symbols.resources.get(lookup_word) {
 			return Some(Location {
 				uri: uri.clone(),
 				range: resource.location,
 			});
 		}
 
-		if let Some(parameter) = symbols.parameters.get(&target) {
+		// Look up the word as a parameter
+		if let Some(parameter) = symbols.parameters.get(&word) {
 			return Some(Location {
 				uri: uri.clone(),
 				range: parameter.location,
 			});
 		}
 
+		// Look up the word as a condition
+		if let Some(condition) = symbols.conditions.get(&word) {
+			return Some(Location {
+				uri: uri.clone(),
+				range: condition.location,
+			});
+		}
+
 		None
 	}
-}
-
-/// Find the target of a !Ref or !GetAtt at the given position
-fn find_ref_or_getatt_at_position(template: &CfnTemplate, position: Position) -> Option<String> {
-	// Helper to check if position is within range
-	fn position_in_range(pos: Position, range: Range) -> bool {
-		if pos.line < range.start.line || pos.line > range.end.line {
-			return false;
-		}
-		if pos.line == range.start.line && pos.character < range.start.character {
-			return false;
-		}
-		if pos.line == range.end.line && pos.character > range.end.character {
-			return false;
-		}
-		true
-	}
-
-	// Check all values in the template
-	fn check_value(value: &CfnValue, position: Position) -> Option<String> {
-		match value {
-			CfnValue::Ref { target, range } if position_in_range(position, *range) => {
-				Some(target.clone())
-			}
-			CfnValue::GetAtt { target, range, .. } if position_in_range(position, *range) => {
-				Some(target.clone())
-			}
-			CfnValue::Array(items, _) => {
-				for item in items {
-					if let Some(target) = check_value(item, position) {
-						return Some(target);
-					}
-				}
-				None
-			}
-			CfnValue::Object(map, _) => {
-				for (value, _) in map.values() {
-					if let Some(target) = check_value(value, position) {
-						return Some(target);
-					}
-				}
-				None
-			}
-			// Check nested intrinsics
-			CfnValue::Sub {
-				template: tpl,
-				variables,
-				..
-			} => {
-				if let Some(target) = check_value(tpl, position) {
-					return Some(target);
-				}
-				if let Some(vars) = variables {
-					for val in vars.values() {
-						if let Some(target) = check_value(val, position) {
-							return Some(target);
-						}
-					}
-				}
-				None
-			}
-			CfnValue::Join { values, .. } => check_value(values, position),
-			CfnValue::Select { index, list, .. } => {
-				check_value(index, position).or_else(|| check_value(list, position))
-			}
-			CfnValue::If {
-				value_if_true,
-				value_if_false,
-				..
-			} => check_value(value_if_true, position)
-				.or_else(|| check_value(value_if_false, position)),
-			// Add other intrinsics as needed
-			_ => None,
-		}
-	}
-
-	// Search through all resources
-	for resource in template.resources.values() {
-		for (prop_value, _) in resource.properties.values() {
-			if let Some(target) = check_value(prop_value, position) {
-				return Some(target);
-			}
-		}
-	}
-
-	// Search through parameters
-	for param in template.parameters.values() {
-		if let Some(default) = &param.default_value
-			&& let Some(target) = check_value(default, position)
-		{
-			return Some(target);
-		}
-	}
-
-	// Search through conditions
-	for condition in template.conditions.values() {
-		if let Some(target) = check_value(&condition.expression, position) {
-			return Some(target);
-		}
-	}
-
-	None
 }
 
 #[cfg(test)]

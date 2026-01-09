@@ -215,6 +215,52 @@ impl<'a> CfnParser for JsonCfnParser<'a> {
 	fn get_section(&self, root: &Self::Node, section_name: &str) -> Option<Self::Node> {
 		self.object_get(root, section_name)
 	}
+
+	fn word_at_position(&self, root: &Self::Node, position: Position) -> Option<String> {
+		// Recursively search for a string node that contains this position
+		fn search_node<'a>(
+			parser: &JsonCfnParser<'a>,
+			node: &Value<'a>,
+			position: Position,
+		) -> Option<String> {
+			let range = parser.node_range(node);
+
+			// Check if position is within this node's range
+			if position.line < range.start.line || position.line > range.end.line {
+				return None;
+			}
+			if position.line == range.start.line && position.character < range.start.character {
+				return None;
+			}
+			if position.line == range.end.line && position.character > range.end.character {
+				return None;
+			}
+
+			// Position is within this node
+			match node {
+				Value::StringLit(s) => Some(s.value.to_string()),
+				Value::Array(arr) => {
+					for elem in &arr.elements {
+						if let Some(word) = search_node(parser, elem, position) {
+							return Some(word);
+						}
+					}
+					None
+				}
+				Value::Object(obj) => {
+					for prop in &obj.properties {
+						if let Some(word) = search_node(parser, &prop.value, position) {
+							return Some(word);
+						}
+					}
+					None
+				}
+				_ => None,
+			}
+		}
+
+		search_node(self, root, position)
+	}
 }
 
 impl<'a> JsonCfnParser<'a> {

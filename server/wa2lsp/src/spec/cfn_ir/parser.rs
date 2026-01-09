@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Location, Range};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Location, Position, Range};
 
 use crate::spec::{
 	cfn_ir::types::{CfnAssertion, CfnMapping, CfnRule},
@@ -86,6 +86,9 @@ pub trait CfnParser {
 	/// Returns (key_string, value_node, key_range)
 	fn object_entries_with_ranges(&self, node: &Self::Node)
 	-> Option<Vec<ObjectEntry<Self::Node>>>;
+
+	/// Find the word/identifier at the given position
+	fn word_at_position(&self, root: &Self::Node, position: Position) -> Option<String>;
 }
 
 /// Parse a CloudFormation template from a root node using a generic parser

@@ -229,27 +229,16 @@ impl LanguageServer for Backend {
 	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
 		let uri = params.text_document.uri;
 
-		eprintln!(
-			"code_action called, diagnostics: {}",
-			params.context.diagnostics.len()
-		);
-
 		let mut actions = Vec::new();
 
 		// Check each diagnostic in the range
 		for diagnostic in &params.context.diagnostics {
-			eprintln!("Checking diagnostic: {:?}", diagnostic.code);
-			eprintln!("Diagnostic data: {:?}", diagnostic.data);
-
 			// Extract suggestion from diagnostic data
 			if let Some(ref data) = diagnostic.data {
-				eprintln!("Has data!");
 				if let Ok(obj) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
 					data.clone(),
 				) {
-					eprintln!("Parsed as map, keys: {:?}", obj.keys().collect::<Vec<_>>());
 					if let Some(kind) = obj.get("kind").and_then(|v| v.as_str()) {
-						eprintln!("Kind: {}", kind);
 						let (title, new_text) = match kind {
 							"getatt" => {
 								let target =
@@ -276,7 +265,6 @@ impl LanguageServer for Backend {
 							}
 							_ => continue,
 						};
-						eprintln!("Creating code action: {} -> {}", title, new_text);
 
 						let edit = TextEdit {
 							range: diagnostic.range,
@@ -309,8 +297,6 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		eprintln!("Returning {} actions", actions.len());
-
 		if actions.is_empty() {
 			Ok(None)
 		} else {
@@ -325,10 +311,24 @@ impl LanguageServer for Backend {
 		let uri = params.text_document_position_params.text_document.uri;
 		let position = params.text_document_position_params.position;
 
+		self.client
+			.log_message(
+				MessageType::INFO,
+				format!("goto_definition: uri={}, position={:?}", uri, position),
+			)
+			.await;
+
 		let location = {
 			let engine = self.engine.lock().unwrap();
 			engine.goto_definition(&uri, position)
 		};
+
+		self.client
+			.log_message(
+				MessageType::INFO,
+				format!("goto_definition result: {:?}", location),
+			)
+			.await;
 
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}

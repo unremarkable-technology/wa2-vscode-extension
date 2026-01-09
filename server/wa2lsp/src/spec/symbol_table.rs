@@ -37,6 +37,7 @@ pub struct ParameterEntry {
 #[derive(Debug, Clone)]
 pub struct ConditionEntry {
 	pub name: String,
+	pub location: Range,
 }
 
 /// Entry for a pseudo-parameter in the symbol table
@@ -51,6 +52,7 @@ impl SymbolTable {
 	pub fn from_template(template: &CfnTemplate) -> Self {
 		let mut resources = HashMap::new();
 		let mut parameters = HashMap::new();
+		let mut conditions = HashMap::new();
 
 		// Add resources
 		for (logical_id, resource) in &template.resources {
@@ -77,11 +79,15 @@ impl SymbolTable {
 		}
 
 		// Add conditions
-		let conditions = template
-			.conditions
-			.keys()
-			.map(|name| (name.clone(), ConditionEntry { name: name.clone() }))
-			.collect();
+		for (cond_name, cond) in &template.conditions {
+			conditions.insert(
+				cond_name.clone(),
+				ConditionEntry {
+					name: cond_name.clone(),
+					location: cond.name_range,
+				},
+			);
+		}
 
 		// Add pseudo-parameters (always available)
 		let pseudo_parameters = Self::create_pseudo_parameters();
