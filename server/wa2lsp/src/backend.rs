@@ -66,6 +66,7 @@ impl LanguageServer for Backend {
 					},
 				)),
 				code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+				definition_provider: Some(OneOf::Left(true)),
 				..Default::default()
 			},
 			server_info: Some(ServerInfo {
@@ -315,6 +316,21 @@ impl LanguageServer for Backend {
 		} else {
 			Ok(Some(actions))
 		}
+	}
+
+	async fn goto_definition(
+		&self,
+		params: GotoDefinitionParams,
+	) -> Result<Option<GotoDefinitionResponse>> {
+		let uri = params.text_document_position_params.text_document.uri;
+		let position = params.text_document_position_params.position;
+
+		let location = {
+			let engine = self.engine.lock().unwrap();
+			engine.goto_definition(&uri, position)
+		};
+
+		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
 }
 

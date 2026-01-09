@@ -1,13 +1,43 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
+use tower_lsp::lsp_types::{
+	Diagnostic, DiagnosticSeverity, Location, NumberOrString, Position, Range, Url,
+};
 
-use crate::spec::{cfn_ir::types::CfnTemplate, spec_store::SpecStore};
+use crate::spec::{
+	cfn_ir::types::{CfnTemplate, CfnValue},
+	spec_store::SpecStore,
+	symbol_table::SymbolTable,
+};
+
+#[derive(Debug, Clone, Copy)]
+enum DocumentFormat {
+	Yaml,
+	Json,
+}
+
+impl DocumentFormat {
+	fn from_language_id_or_path(language_id: Option<&str>, uri: &Url) -> Self {
+		match language_id {
+			Some("cloudformation-json") => DocumentFormat::Json,
+			Some("cloudformation-yaml") => DocumentFormat::Yaml,
+			_ => {
+				// Fallback to extension
+				let path = uri.path();
+				if path.ends_with(".json") {
+					DocumentFormat::Json
+				} else {
+					DocumentFormat::Yaml
+				}
+			}
+		}
+	}
+}
 
 /// per-document state held by the core engine
 struct DocumentState {
 	text: String,
-	language_id: Option<String>,
+	format: DocumentFormat,
 }
 
 /// core engine: owns all document state and analysis logic
@@ -39,46 +69,38 @@ impl CoreEngine {
 	}
 
 	pub fn on_open(&mut self, uri: Url, text: String, language_id: String) {
-		self.docs.insert(
-			uri,
-			DocumentState {
-				text,
-				language_id: Some(language_id),
-			},
-		);
+		let format = DocumentFormat::from_language_id_or_path(Some(&language_id), &uri);
+		self.docs.insert(uri, DocumentState { text, format });
 	}
 
 	pub fn on_change(&mut self, uri: Url, new_text: String) {
-		let entry = self.docs.entry(uri).or_insert(DocumentState {
-			text: String::new(),
-			language_id: None,
-		});
+		// For changes, we keep the existing format or detect from URI
+		let format = self
+			.docs
+			.get(&uri)
+			.map(|d| d.format)
+			.unwrap_or_else(|| DocumentFormat::from_language_id_or_path(None, &uri));
 
-		entry.text = new_text;
+		self.docs.insert(
+			uri,
+			DocumentState {
+				text: new_text,
+				format,
+			},
+		);
 	}
 
 	pub fn on_save(&mut self, _uri: &Url) {}
 
 	pub fn analyse_document_fast(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
 		let doc = self.docs.get(uri)?;
-		let text = &doc.text;
-
-		let diags = match doc.language_id.as_deref() {
-			Some("cloudformation-json") => self.analyse_json(uri, text),
-			Some("cloudformation-yaml") => self.analyse_yaml(uri, text),
-			_ => {
-				// Fallback to extension
-				let path = uri.path();
-				if path.ends_with(".json") {
-					self.analyse_json(uri, text)
-				} else {
-					self.analyse_yaml(uri, text)
-				}
-			}
+		let diags = match doc.format {
+			DocumentFormat::Json => self.analyse_json(uri, &doc.text),
+			DocumentFormat::Yaml => self.analyse_yaml(uri, &doc.text),
 		};
-
 		Some(diags)
 	}
+
 	/// Analyse a document as YAML using saphyr with IR conversion
 	fn analyse_yaml(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
 		// Parse to IR
@@ -170,6 +192,142 @@ impl CoreEngine {
 
 		diags
 	}
+
+	pub fn goto_definition(&self, uri: &Url, position: Position) -> Option<Location> {
+		let doc = self.docs.get(uri)?;
+
+		// Parse template based on format
+		let template = match doc.format {
+			DocumentFormat::Json => CfnTemplate::from_json(&doc.text, uri),
+			DocumentFormat::Yaml => CfnTemplate::from_yaml(&doc.text, uri),
+		}
+		.ok()?;
+
+		// Build symbol table
+		let symbols = SymbolTable::from_template(&template);
+
+		// Find what's at the cursor position
+		let target = find_ref_or_getatt_at_position(&template, position)?;
+
+		// Look up the target in symbol table
+		if let Some(resource) = symbols.resources.get(&target) {
+			return Some(Location {
+				uri: uri.clone(),
+				range: resource.location,
+			});
+		}
+
+		if let Some(parameter) = symbols.parameters.get(&target) {
+			return Some(Location {
+				uri: uri.clone(),
+				range: parameter.location,
+			});
+		}
+
+		None
+	}
+}
+
+/// Find the target of a !Ref or !GetAtt at the given position
+fn find_ref_or_getatt_at_position(template: &CfnTemplate, position: Position) -> Option<String> {
+	// Helper to check if position is within range
+	fn position_in_range(pos: Position, range: Range) -> bool {
+		if pos.line < range.start.line || pos.line > range.end.line {
+			return false;
+		}
+		if pos.line == range.start.line && pos.character < range.start.character {
+			return false;
+		}
+		if pos.line == range.end.line && pos.character > range.end.character {
+			return false;
+		}
+		true
+	}
+
+	// Check all values in the template
+	fn check_value(value: &CfnValue, position: Position) -> Option<String> {
+		match value {
+			CfnValue::Ref { target, range } if position_in_range(position, *range) => {
+				Some(target.clone())
+			}
+			CfnValue::GetAtt { target, range, .. } if position_in_range(position, *range) => {
+				Some(target.clone())
+			}
+			CfnValue::Array(items, _) => {
+				for item in items {
+					if let Some(target) = check_value(item, position) {
+						return Some(target);
+					}
+				}
+				None
+			}
+			CfnValue::Object(map, _) => {
+				for (value, _) in map.values() {
+					if let Some(target) = check_value(value, position) {
+						return Some(target);
+					}
+				}
+				None
+			}
+			// Check nested intrinsics
+			CfnValue::Sub {
+				template: tpl,
+				variables,
+				..
+			} => {
+				if let Some(target) = check_value(tpl, position) {
+					return Some(target);
+				}
+				if let Some(vars) = variables {
+					for val in vars.values() {
+						if let Some(target) = check_value(val, position) {
+							return Some(target);
+						}
+					}
+				}
+				None
+			}
+			CfnValue::Join { values, .. } => check_value(values, position),
+			CfnValue::Select { index, list, .. } => {
+				check_value(index, position).or_else(|| check_value(list, position))
+			}
+			CfnValue::If {
+				value_if_true,
+				value_if_false,
+				..
+			} => check_value(value_if_true, position)
+				.or_else(|| check_value(value_if_false, position)),
+			// Add other intrinsics as needed
+			_ => None,
+		}
+	}
+
+	// Search through all resources
+	for resource in template.resources.values() {
+		for (prop_value, _) in resource.properties.values() {
+			if let Some(target) = check_value(prop_value, position) {
+				return Some(target);
+			}
+		}
+	}
+
+	// Search through parameters
+	for param in template.parameters.values() {
+		if let Some(default) = &param.default_value
+			&& let Some(target) = check_value(default, position)
+		{
+			return Some(target);
+		}
+	}
+
+	// Search through conditions
+	for condition in template.conditions.values() {
+		if let Some(target) = check_value(&condition.expression, position) {
+			return Some(target);
+		}
+	}
+
+	None
 }
 
 #[cfg(test)]
