@@ -1,6 +1,6 @@
 use id_arena::Arena;
 
-use crate::node::{Annotation, Node, NodeId, NodeKind};
+use super::node::{Annotation, Node, NodeId, NodeKind};
 
 /// A declared node
 #[derive(Debug, Default)]
@@ -24,9 +24,16 @@ impl System {
 		})
 	}
 
+	pub fn node(&self, id: NodeId) -> Result<&Node, NodeError> {
+		self.nodes.get(id).ok_or(NodeError::InvalidNode)
+	}
+
+	pub fn node_mut(&mut self, id: NodeId) -> Result<&mut Node, NodeError> {
+		self.nodes.get_mut(id).ok_or(NodeError::InvalidNode)
+	}
+
 	pub fn annotate(&mut self, id: NodeId, annotation: Annotation) -> Result<(), NodeError> {
-		let node = self.nodes.get_mut(id).ok_or(NodeError::InvalidNode)?;
-		node.annotations.push(annotation);
+		self.node_mut(id)?.annotations.push(annotation);
 		Ok(())
 	}
 
@@ -35,7 +42,6 @@ impl System {
 
 		for (id, node) in self.nodes.iter() {
 			if matches!(node.kind, NodeKind::Store) {
-
 				// check for mandatory tags
 				if !node.has_tag(FocusTaxonomy::DataSensitivity) {
 					guides.push(Guide {

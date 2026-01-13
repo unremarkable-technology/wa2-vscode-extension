@@ -417,7 +417,27 @@ async fn analyser_loop(
 
 			match parse_result {
 				Ok(template) => {
-					continue;
+					// Fast path succeeded with no diagnostics
+					// Run slow path (WA2 guidance)
+					let wa2_diagnostics = {
+						let engine_guard = engine.lock().unwrap();
+						engine_guard.analyse_document_slow(&template)
+					};
+
+					// Publish WA2 guidance diagnostics
+					if !wa2_diagnostics.is_empty() {
+						let message = format!("doc_analyse_slow: {} (WA2 guidance)", uri);
+						client.log_message(MessageType::INFO, message).await;
+
+						client
+							.publish_diagnostics(uri.clone(), wa2_diagnostics, None)
+							.await;
+					} else {
+						// Template is perfect - no diagnostics at all
+						client
+							.publish_diagnostics(uri.clone(), Vec::new(), None)
+							.await;
+					}
 				}
 				Err(diagnostics) => {
 					let message = format!("doc_analyse: {}", uri);

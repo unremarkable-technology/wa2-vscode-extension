@@ -1,6 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use wa2lsp::spec::{spec_store::SpecStore, spec_source::SpecSource, spec_cache::SpecCacheManager};
+use crate::spec::{spec_store::SpecStore, spec_source::SpecSource, spec_cache::SpecCacheManager};
 
 /// Loads the real CFN spec (blocking). Cached after first call.
 /// Panics if spec can't be loaded.

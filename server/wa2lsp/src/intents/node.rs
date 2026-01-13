@@ -1,6 +1,6 @@
 use id_arena::Id;
 
-use crate::system::FocusTaxonomy;
+use super::system::FocusTaxonomy;
 
 /// unique handle to a `Node` instance
 pub type NodeId = Id<Node>;

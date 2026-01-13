@@ -5,10 +5,13 @@ use tower_lsp::lsp_types::{
 	Diagnostic, DiagnosticSeverity, Location, NumberOrString, Position, Range, Url,
 };
 
-use crate::spec::{
-	cfn_ir::{parser::CfnParser, types::CfnTemplate},
-	spec_store::SpecStore,
-	symbol_table::SymbolTable,
+use crate::{
+	intents::{evaluator::project_vendor_aws, system::GuideLevel},
+	spec::{
+		cfn_ir::{parser::CfnParser, types::CfnTemplate},
+		spec_store::SpecStore,
+		symbol_table::SymbolTable,
+	},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -147,6 +150,46 @@ impl CoreEngine {
 			}
 			Err(diagnostics) => Err(diagnostics),
 		}
+	}
+
+	/// Convert WA2 guidance into LSP diagnostics
+	pub fn analyse_document_slow(&self, template: &CfnTemplate) -> Vec<Diagnostic> {
+		let system = match project_vendor_aws(template) {
+			Ok(system) => system,
+			Err(_) => return vec![], // If evaluation fails, return no diagnostics
+		};
+
+		let guides = system.guidance();
+
+		// Convert each guide to a diagnostic
+		guides
+			.into_iter()
+			.filter_map(|guide| {
+				// Get the node from the system to find its name
+				let node = system.nodes.get(guide.node)?;
+				let node_name = &node.name; // This is the logical_id from CloudFormation
+
+				// Find the resource by matching logical_id to node name
+				let resource = template
+					.resources
+					.values()
+					.find(|r| &r.logical_id == node_name)?;
+
+				let severity = match guide.level {
+					GuideLevel::Required => DiagnosticSeverity::ERROR,
+					GuideLevel::Action => DiagnosticSeverity::WARNING,
+				};
+
+				Some(Diagnostic {
+					range: resource.logical_id_range,
+					severity: Some(severity),
+					code: Some(NumberOrString::String("WA2_GUIDE".into())),
+					source: Some("wa2".into()),
+					message: guide.tldr,
+					..Default::default()
+				})
+			})
+			.collect()
 	}
 
 	pub fn goto_definition(&self, uri: &Url, position: Position) -> Option<Location> {
@@ -474,9 +517,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap_err();
-
-		assert_eq!(diags.len(), 0, "valid resource should have no diagnostics");
+		let _template = engine.analyse_document_fast(&uri).unwrap();
 	}
 
 	#[test]
@@ -502,13 +543,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap_err();
-
-		assert_eq!(
-			diags.len(),
-			0,
-			"valid resource with optional properties should have no diagnostics"
-		);
+		let _template = engine.analyse_document_fast(&uri).unwrap();
 	}
 
 	#[test]
@@ -690,11 +725,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap_err();
-
-		// IR conversion skips non-string keys, so no diagnostic
-		// This is acceptable - the key is just ignored
-		assert_eq!(diags.len(), 0);
+		let _template = engine.analyse_document_fast(&uri).unwrap();
 	}
 
 	#[test]
@@ -790,13 +821,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap_err();
-
-		assert_eq!(
-			diags.len(),
-			0,
-			"all valid resources should produce no diagnostics"
-		);
+		let _template = engine.analyse_document_fast(&uri).unwrap();
 	}
 
 	#[test]
@@ -1046,9 +1071,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-json".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap_err();
-
-		assert_eq!(diags.len(), 0);
+		let _template = engine.analyse_document_fast(&uri).unwrap();
 	}
 
 	#[test]

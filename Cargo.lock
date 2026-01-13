@@ -976,17 +976,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "intents"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "id-arena",
- "tokio",
- "url",
- "wa2lsp",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2127,6 +2116,7 @@ dependencies = [
  "datatest-stable",
  "dirs",
  "flate2",
+ "id-arena",
  "jsonc-parser",
  "reqwest",
  "saphyr",

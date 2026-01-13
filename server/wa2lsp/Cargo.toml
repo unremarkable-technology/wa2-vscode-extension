@@ -19,6 +19,7 @@ saphyr = "0.0.6"
 jsonc-parser = "0.28"
 zip = "6.0.0"
 datatest-stable = "0.3.3"
+id-arena = "2.2.1"
 
 [[test]]
 name = "fixtures"

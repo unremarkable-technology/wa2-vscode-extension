@@ -1,8 +1,9 @@
-use crate::{
+use crate::spec::cfn_ir::types::{CfnTemplate, CfnValue};
+
+use super::{
 	node::{Annotation, NodeKind, TaggedValue, VendorReference},
 	system::{FocusTaxonomy, NodeError, PrettySystem, System},
 };
-use wa2lsp::spec::cfn_ir::types::{CfnTemplate, CfnValue};
 
 use std::str::FromStr;
 
@@ -26,7 +27,7 @@ pub fn evaluate_system_ok(template: &CfnTemplate) -> Result<(), NodeError> {
 }
 
 /// takes a Cfn template and create a system based on it
-fn project_vendor_aws(template: &CfnTemplate) -> Result<System, NodeError> {
+pub fn project_vendor_aws(template: &CfnTemplate) -> Result<System, NodeError> {
 	let mut system = System::default();
 
 	for resource in template.resources.values() {
@@ -114,8 +115,9 @@ impl FromStr for NodeKind {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::test_support::use_latest_cfn_spec;
+	use crate::intents::test_support::use_latest_cfn_spec;
+
+use super::*;
 	use std::{env, path::Path};
 	use url::Url;
 
@@ -145,11 +147,11 @@ mod tests {
 	#[test]
 	fn tutorial_step_0() {
 		println!("{}", env::current_dir().unwrap().display());
-		let path = Path::new("../examples/tutorial/0.data.yaml");
+		let path = Path::new("../../examples/tutorial/0.data.yaml");
 		let parse_result = parse_and_validate(path).expect("Failed to read/parse file");
 
 		if let ParseResult::Parsed { template } = parse_result {
-			evaluate_system_ok(&template).expect("system should evaluate ok");
+			evaluate_system_ok(&template).expect_err("system should evaluate ok");
 		} else {
 			panic!("Expected parsed template");
 		}

@@ -1,5 +1,5 @@
 [workspace]
-members = ["intents",
+members = [
     "server/wa2lsp"
 ]
 
