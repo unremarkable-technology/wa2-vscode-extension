@@ -25,6 +25,11 @@ Resources:
           DefaultRetention:
             Mode: COMPLIANCE
             Days: !Ref RetentionDays
+      Tags:
+        - Key: DataSensitivity
+          Value: Public
+        - Key: DataCriticality
+          Value: Important # this is the backup, not the original
 
   BackupBucketPolicy:
     Type: AWS::S3::BucketPolicy

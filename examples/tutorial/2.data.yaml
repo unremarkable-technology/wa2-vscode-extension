@@ -72,7 +72,7 @@ Resources:
         - Key: DataSensitivity
           Value: Public
         - Key: DataCriticality
-          Value: BusinessCritical
+          Value: Important # this is the backup, not the original
 
 Outputs:
   DataBucketName:

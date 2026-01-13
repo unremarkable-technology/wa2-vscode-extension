@@ -440,7 +440,7 @@ async fn analyser_loop(
 					}
 				}
 				Err(diagnostics) => {
-					let message = format!("doc_analyse: {}", uri);
+					let message = format!("doc_analyse_fast: {}", uri);
 					client.log_message(MessageType::INFO, message).await;
 
 					client

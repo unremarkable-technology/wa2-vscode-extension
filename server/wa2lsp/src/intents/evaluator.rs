@@ -49,51 +49,53 @@ pub fn project_vendor_aws(template: &CfnTemplate) -> Result<System, NodeError> {
 
 		// TAGS: extract any evidence held in tags
 		// TODO: map tags into taxonomy via configuration not hard coded!
-		if let Some((tag_val, _tag_range)) = resource.properties.get("Tags") {
-			let tags = tag_val.as_array().expect("valid object");
+		if let Some((tag_val, _)) = resource.properties.get("Tags")
+			&& let Some(tags) = tag_val.as_array()
+		{
 			for tag in tags {
-				let tag = tag.as_object().expect("valid object");
-				let key = tag["Key"].0.as_str().expect("key is a string");
-				let value = tag["Value"].0.as_str().expect("value is a string");
-
-				// does it have a data tagging?
-				match key {
-					"DataSensitivity" => {
-						system.annotate(
-							node,
-							Annotation::Tagged(TaggedValue {
-								tag: FocusTaxonomy::DataSensitivity,
-								value: Some(value.to_owned()),
-							}),
-						)?;
+				if let Some(tag_obj) = tag.as_object() {
+					// Safe access to Key and Value
+					if let Some((key_val, _)) = tag_obj.get("Key")
+						&& let Some((value_val, _)) = tag_obj.get("Value")
+						&& let Some(key) = key_val.as_str()
+						&& let Some(value) = value_val.as_str()
+					{
+						match key {
+							"DataSensitivity" => {
+								system.annotate(
+									node,
+									Annotation::Tagged(TaggedValue {
+										tag: FocusTaxonomy::DataSensitivity,
+										value: Some(value.to_owned()),
+									}),
+								)?;
+							}
+							"DataCriticality" => {
+								system.annotate(
+									node,
+									Annotation::Tagged(TaggedValue {
+										tag: FocusTaxonomy::DataCriticality,
+										value: Some(value.to_owned()),
+									}),
+								)?;
+							}
+							_ => {}
+						}
 					}
-					"DataCriticality" => {
-						system.annotate(
-							node,
-							Annotation::Tagged(TaggedValue {
-								tag: FocusTaxonomy::DataCriticality,
-								value: Some(value.to_owned()),
-							}),
-						)?;
-					}
-					_ => {}
 				}
 			}
 		}
 
 		// Evidence: what resiliance is in place?
 		// TODO: map methods resiliance
-		if let Some((repl_val, _repl_range)) = resource.properties.get("ReplicationConfiguration") {
-			let repl_obj = repl_val.as_object().expect("valid object");
-			let field = &repl_obj["Status"].0;
-			if let CfnValue::String(value, _) = field
-				&& value == "Enabled"
-			{
-				system.annotate(
-					node,
-					Annotation::Evidence(FocusTaxonomy::DataResiliance),
-				)?;
-			}
+		// Evidence: what resilience is in place?
+		if let Some((repl_val, _)) = resource.properties.get("ReplicationConfiguration")
+			&& let Some(repl_obj) = repl_val.as_object()
+			&& let Some((status_value, _)) = repl_obj.get("Status")
+			&& let CfnValue::String(value, _) = status_value
+			&& value == "Enabled"
+		{
+			system.annotate(node, Annotation::Evidence(FocusTaxonomy::DataResiliance))?;
 		}
 	}
 
@@ -117,7 +119,7 @@ impl FromStr for NodeKind {
 mod tests {
 	use crate::intents::test_support::use_latest_cfn_spec;
 
-use super::*;
+	use super::*;
 	use std::{env, path::Path};
 	use url::Url;
 
