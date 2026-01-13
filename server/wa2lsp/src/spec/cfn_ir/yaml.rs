@@ -258,7 +258,7 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 
 	fn word_at_position(&self, root: &Self::Node, position: Position) -> Option<String> {
 		// Recursively search for a string node that contains this position
-		fn search_node(node: &MarkedYaml, position: Position, depth: usize) -> Option<String> {
+		fn search_node(node: &MarkedYaml, position: Position) -> Option<String> {
 			// Check if position is within this node's range
 			let start_marker = node.span.start;
 			let end_marker = node.span.end;
@@ -286,7 +286,7 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 				}
 				YamlData::Sequence(seq) => {
 					for item in seq {
-						if let Some(word) = search_node(item, position, depth + 1) {
+						if let Some(word) = search_node(item, position) {
 							return Some(word);
 						}
 					}
@@ -294,10 +294,10 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 				}
 				YamlData::Mapping(map) => {
 					for (key, value) in map {
-						if let Some(word) = search_node(key, position, depth + 1) {
+						if let Some(word) = search_node(key, position) {
 							return Some(word);
 						}
-						if let Some(word) = search_node(value, position, depth + 1) {
+						if let Some(word) = search_node(value, position) {
 							return Some(word);
 						}
 					}
@@ -310,7 +310,7 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 						YamlData::Value(Scalar::String(s)) => {
 							Some(s.to_string())
 						}
-						_ => search_node(inner, position, depth + 1),
+						_ => search_node(inner, position),
 					}
 				}
 				_ => {
@@ -319,6 +319,6 @@ impl<'a> CfnParser for YamlCfnParser<'a> {
 			}
 		}
 
-		search_node(root, position, 0)
+		search_node(root, position)
 	}
 }

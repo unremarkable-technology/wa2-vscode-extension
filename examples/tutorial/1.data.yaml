@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Data - S3 bucket for our sensitive data
+
+Parameters:
+  DestinationBucketArn:
+    Type: String
+  DestinationAccountId:
+    Type: String
+  ReplicationRoleName:
+    Type: String
+    Default: s3-replication-role
+
+Resources:
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref ReplicationRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Replication
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetReplicationConfiguration
+                  - s3:ListBucket
+                Resource: !GetAtt DataBucket.Arn
+
+              - Effect: Allow
+                Action:
+                  - s3:GetObjectVersionForReplication
+                  - s3:GetObjectVersionAcl
+                  - s3:GetObjectVersionTagging
+                  - s3:GetObjectRetention
+                  - s3:GetObjectLegalHold
+                Resource: !Sub "${DataBucket.Arn}/*"
+
+              - Effect: Allow
+                Action:
+                  - s3:ReplicateObject
+                  - s3:ReplicateDelete
+                  - s3:ReplicateTags
+                  - s3:ObjectOwnerOverrideToBucketOwner
+                Resource: !Sub "${DestinationBucketArn}/*"
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: ReplicationRole
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+          - Id: ReplicateAllToBackupAccount
+            Status: Enabled
+            DeleteMarkerReplication:
+              Status: Enabled
+            Destination:
+              Bucket: !Ref DestinationBucketArn
+              Account: !Ref DestinationAccountId
+              AccessControlTranslation:
+                Owner: Destination
+      Tags:
+        - Key: DataSensitivity
+          Value: Sensitive
+
+Outputs:
+  DataBucketName:
+    Value: !Ref DataBucket
