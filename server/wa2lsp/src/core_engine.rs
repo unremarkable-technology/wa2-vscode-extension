@@ -98,8 +98,8 @@ impl CoreEngine {
 		let text = &doc.text;
 
 		let parse_result = match doc.format {
-			DocumentFormat::Json => CfnTemplate::from_yaml(text, uri),
-			DocumentFormat::Yaml => CfnTemplate::from_json(text, uri)
+			DocumentFormat::Json => CfnTemplate::from_json(text, uri),
+			DocumentFormat::Yaml => CfnTemplate::from_yaml(text, uri),
 		};
 
 		match parse_result {
@@ -137,11 +137,13 @@ impl CoreEngine {
 				// Validate against spec if available
 				if let Some(spec) = self.spec_store() {
 					diagnostics.extend(template.validate_against_spec(spec, uri));
-
-					return Err(diagnostics);
 				}
 
-				Ok(template)
+				if diagnostics.is_empty() {
+					Ok(template)
+				} else {
+					Err(diagnostics)
+				}
 			}
 			Err(diagnostics) => Err(diagnostics),
 		}
