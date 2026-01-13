@@ -410,24 +410,22 @@ async fn analyser_loop(
 
 			// Analyse this uri using the latest text snapshot. We treat
 			// "no text" as a processed event (doc was closed / removed).
-			let diagnostics = {
+			let parse_result = {
 				let engine_guard = engine.lock().unwrap();
 				engine_guard.analyse_document_fast(&uri)
 			};
 
-			match diagnostics {
-				Some(diagnostics) => {
+			match parse_result {
+				Ok(template) => {
+					continue;
+				}
+				Err(diagnostics) => {
 					let message = format!("doc_analyse: {}", uri);
 					client.log_message(MessageType::INFO, message).await;
 
 					client
 						.publish_diagnostics(uri.clone(), diagnostics, None)
 						.await;
-				}
-				None => {
-					let message = format!("doc_analyse: {} (skipped, no text in engine)", uri);
-					client.log_message(MessageType::INFO, message).await;
-					continue;
 				}
 			}
 		}

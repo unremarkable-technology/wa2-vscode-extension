@@ -54,6 +54,20 @@ Resources:
     Type: AWS::S3::Bucket
     DependsOn: ReplicationRole
     Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+          - Id: ReplicateAllToBackupAccount
+            Status: Enabled
+            DeleteMarkerReplication:
+              Status: Enabled
+            Destination:
+              Bucket: !Ref DestinationBucketArn
+              Account: !Ref DestinationAccountId
+              AccessControlTranslation:
+                Owner: Destination
       Tags:
         - Key: DataSensitivity
           Value: Public

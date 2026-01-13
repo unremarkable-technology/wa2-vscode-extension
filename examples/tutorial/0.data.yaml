@@ -4,16 +4,6 @@ Description: Data - S3 bucket for our data
 Resources:
   DataBucket:
     Type: AWS::S3::Bucket
-    Properties:
-      VersioningConfiguration:
-        Status: Enabled
-      ReplicationConfiguration:
-        Status: Enabled
-      Tags:
-        - Key: DataSensitivity
-          Value: Public
-        - Key: DataCriticality
-          Value: BusinessCritical
 
 Outputs:
   DataBucketName:

@@ -6,10 +6,7 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::spec::{
-	cfn_ir::{
-		parser::CfnParser,
-		types::CfnTemplate,
-	},
+	cfn_ir::{parser::CfnParser, types::CfnTemplate},
 	spec_store::SpecStore,
 	symbol_table::SymbolTable,
 };
@@ -96,105 +93,58 @@ impl CoreEngine {
 
 	pub fn on_save(&mut self, _uri: &Url) {}
 
-	pub fn analyse_document_fast(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
-		let doc = self.docs.get(uri)?;
-		let diags = match doc.format {
-			DocumentFormat::Json => self.analyse_json(uri, &doc.text),
-			DocumentFormat::Yaml => self.analyse_yaml(uri, &doc.text),
-		};
-		Some(diags)
-	}
+	pub fn analyse_document_fast(&self, uri: &Url) -> Result<CfnTemplate, Vec<Diagnostic>> {
+		let doc = self.docs.get(uri).expect("document must have a uri");
+		let text = &doc.text;
 
-	/// Analyse a document as YAML using saphyr with IR conversion
-	fn analyse_yaml(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
-		// Parse to IR
-		let template = match CfnTemplate::from_yaml(text, uri) {
-			Ok(t) => t,
-			Err(diags) => return diags,
+		let parse_result = match doc.format {
+			DocumentFormat::Json => CfnTemplate::from_yaml(text, uri),
+			DocumentFormat::Yaml => CfnTemplate::from_json(text, uri)
 		};
 
-		// Quick check - does this look like CloudFormation?
-		if template.resources.is_empty() && !text.contains("AWSTemplateFormatVersion") {
-			return Vec::new(); // Not CloudFormation, ignore silently
+		match parse_result {
+			Ok(template) => {
+				// Quick check - does this look like CloudFormation?
+				if template.resources.is_empty() && !text.contains("AWSTemplateFormatVersion") {
+					return Ok(template); // Not CloudFormation, ignore silently
+				}
+
+				let mut diagnostics = Vec::new();
+
+				// Check for missing Resources section (warning only)
+				if template.resources.is_empty() {
+					diagnostics.push(Diagnostic {
+						range: Range {
+							start: Position {
+								line: 0,
+								character: 0,
+							},
+							end: Position {
+								line: 0,
+								character: 1,
+							},
+						},
+						severity: Some(DiagnosticSeverity::WARNING),
+						code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
+						source: Some("wa2-lsp".into()),
+						message: "Template has no top-level `Resources` section; \
+		           most CloudFormation templates define at least one resource."
+							.to_string(),
+						..Default::default()
+					});
+				}
+
+				// Validate against spec if available
+				if let Some(spec) = self.spec_store() {
+					diagnostics.extend(template.validate_against_spec(spec, uri));
+
+					return Err(diagnostics);
+				}
+
+				Ok(template)
+			}
+			Err(diagnostics) => Err(diagnostics),
 		}
-
-		let mut diags = Vec::new();
-
-		// Check for missing Resources section (warning only)
-		if template.resources.is_empty() {
-			diags.push(Diagnostic {
-				range: Range {
-					start: Position {
-						line: 0,
-						character: 0,
-					},
-					end: Position {
-						line: 0,
-						character: 1,
-					},
-				},
-				severity: Some(DiagnosticSeverity::WARNING),
-				code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
-				source: Some("wa2-lsp".into()),
-				message: "Template has no top-level `Resources` section; \
-                 most CloudFormation templates define at least one resource."
-					.to_string(),
-				..Default::default()
-			});
-		}
-
-		// Validate against spec if available
-		if let Some(spec) = self.spec_store() {
-			diags.extend(template.validate_against_spec(spec, uri));
-		}
-
-		diags
-	}
-
-	/// Analyse a document as JSON using jsonc-parser with IR conversion
-	fn analyse_json(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
-		// Parse to IR
-		let template = match CfnTemplate::from_json(text, uri) {
-			Ok(t) => t,
-			Err(diags) => return diags,
-		};
-
-		// Quick check - does this look like CloudFormation?
-		if template.resources.is_empty() && !text.contains("AWSTemplateFormatVersion") {
-			return Vec::new(); // Not CloudFormation, ignore silently
-		}
-
-		let mut diags = Vec::new();
-
-		// Check for missing Resources section (warning only)
-		if template.resources.is_empty() {
-			diags.push(Diagnostic {
-				range: Range {
-					start: Position {
-						line: 0,
-						character: 0,
-					},
-					end: Position {
-						line: 0,
-						character: 1,
-					},
-				},
-				severity: Some(DiagnosticSeverity::WARNING),
-				code: Some(NumberOrString::String("WA2_CFN_RESOURCES_MISSING".into())),
-				source: Some("wa2-lsp".into()),
-				message: "Template has no top-level `Resources` section; \
-                 most CloudFormation templates define at least one resource."
-					.to_string(),
-				..Default::default()
-			});
-		}
-
-		// Validate against spec if available
-		if let Some(spec) = self.spec_store() {
-			diags.extend(template.validate_against_spec(spec, uri));
-		}
-
-		diags
 	}
 
 	pub fn goto_definition(&self, uri: &Url, position: Position) -> Option<Location> {
@@ -334,7 +284,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -369,7 +319,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -402,7 +352,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -437,7 +387,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// Should have: missing BucketEncryption + 2 unknown properties = 3 diagnostics
 		assert_eq!(diags.len(), 3);
@@ -483,7 +433,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// MyBucket: missing BucketEncryption + unknown property = 2
 		// MyFunction: missing Code + missing Runtime = 2
@@ -522,7 +472,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 0, "valid resource should have no diagnostics");
 	}
@@ -550,7 +500,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(
 			diags.len(),
@@ -577,7 +527,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -606,7 +556,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -639,7 +589,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// IR conversion skips non-string Type, so we see missing Type
 		assert_eq!(diags.len(), 1);
@@ -671,7 +621,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -703,7 +653,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// IR conversion skips non-mapping Properties, so we just see missing required property
 		assert_eq!(diags.len(), 1);
@@ -738,7 +688,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// IR conversion skips non-string keys, so no diagnostic
 		// This is acceptable - the key is just ignored
@@ -764,7 +714,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// Now correctly detects missing required property
 		// (This is the correct behavior - the old code had a bug)
@@ -792,7 +742,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// Missing Code and Runtime
 		assert_eq!(diags.len(), 2);
@@ -838,7 +788,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(
 			diags.len(),
@@ -871,7 +821,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		// ValidBucket should be fine
 		// InvalidFunction: missing Code, missing Runtime, unknown InvalidProp = 3 diagnostics
@@ -908,7 +858,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -938,7 +888,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -967,7 +917,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 2);
 
@@ -994,7 +944,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-yaml".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -1030,7 +980,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-json".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		let d = &diags[0];
@@ -1066,7 +1016,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-json".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		assert!(diags[0].message.contains("BucketEncryption"));
@@ -1094,7 +1044,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-json".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 0);
 	}
@@ -1119,7 +1069,7 @@ Resources:
 			text.to_string(),
 			"cloudformation-json".to_string(),
 		);
-		let diags = engine.analyse_document_fast(&uri).unwrap();
+		let diags = engine.analyse_document_fast(&uri).unwrap_err();
 
 		assert_eq!(diags.len(), 1);
 		assert_eq!(
