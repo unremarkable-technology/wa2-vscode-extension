@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Data - S3 bucket for our data
+
+Parameters:
+  DataBucketName:
+    Type: String
+  DestinationBucketArn:
+    Type: String
+  DestinationAccountId:
+    Type: String
+  ReplicationRoleName:
+    Type: String
+    Default: s3-replication-role
+
+Resources:
+  # IAM role assumed by S3 to perform cross-account replication
+  # kept minimal and service-scoped to avoid broader IAM surface
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref ReplicationRoleName
+
+      # allow the S3 service to assume this role
+      # no human or workload access
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sts:AssumeRole
+
+  # Managed policy attached to the replication role
+  # split out to avoid inline IAM policies (guard requirement)
+  # permissions are tightly scoped to:
+  #  - read versioned data from the source bucket
+  #  - write replicated objects + deletes to the destination bucket
+  ReplicationPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-s3-replication"
+
+      # attached only to the replication role
+      Roles:
+        - !Ref ReplicationRole
+
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # allow S3 to read replication config and list source bucket
+          - Effect: Allow
+            Action:
+              - s3:GetReplicationConfiguration
+              - s3:ListBucket
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}"
+
+          # allow S3 to read all required object metadata + versions
+          # needed for correct replication of versioned + protected objects
+          - Effect: Allow
+            Action:
+              - s3:GetObjectVersionForReplication
+              - s3:GetObjectVersionAcl
+              - s3:GetObjectVersionTagging
+              - s3:GetObjectRetention
+              - s3:GetObjectLegalHold
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/*"
+
+          # allow S3 to write replicated objects, deletes, and tags
+          # into the destination account bucket
+          - Effect: Allow
+            Action:
+              - s3:ReplicateObject
+              - s3:ReplicateDelete
+              - s3:ReplicateTags
+              - s3:ObjectOwnerOverrideToBucketOwner
+            Resource: !Sub "${DestinationBucketArn}/*"
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+
+    # don't delete this bucket when stack deleted, or updated
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+    Properties:
+      BucketName: !Ref DataBucketName
+
+      # baseline no access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # the default since Jan 2023, but cfn-guard does not know that
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 # or "aws:kms" if you want KMS
+
+      # provide native undo for delete/overwrites, but ^cost
+      VersioningConfiguration:
+        Status: Enabled
+
+      # keep access logs for audit/post-mortems
+      # should be modernized to use CloudTrail s3 data events with SIEM
+      LoggingConfiguration:
+        DestinationBucketName: !Ref DataBucketLogs
+        LogFilePrefix: data-bucket-access-logs/
+
+      # replicate the data bucket to another account
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+          - Id: ReplicateAllToBackupAccount
+            Status: Enabled
+            DeleteMarkerReplication:
+              Status: Enabled
+            Destination:
+              Bucket: !Ref DestinationBucketArn
+              Account: !Ref DestinationAccountId
+              AccessControlTranslation:
+                Owner: Destination
+
+      Tags:
+        - Key: DataSensitivity
+          Value: Confidential # company data
+        - Key: DataCriticality
+          Value: BusinessCritical # major impact if we lose
+
+  # Bucket for server access logs
+  DataBucketLogs:
+    Type: AWS::S3::Bucket
+
+    # don't delete this bucket when stack deleted, or updated
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+    Metadata:
+      guard:
+        # we don't need to log access to the logs, or version (calm cfn-guard)
+        SuppressedRules:
+          - S3_BUCKET_LOGGING_ENABLED
+          - S3_BUCKET_VERSIONING_ENABLED
+
+    Properties:
+      # baseline no access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # the default since Jan 2023, but cfn-guard does not know that
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 # or "aws:kms" if you want KMS
+
+      Tags:
+        - Key: DataSensitivity
+          Value: Private # access logs can be revealing
+        - Key: DataCriticality
+          Value: NonCritical # not critical to daily ops
+
+Outputs:
+  DataBucketName:
+    Value: !Ref DataBucket
+  DataBucketArn:
+    Value: !GetAtt DataBucket.Arn

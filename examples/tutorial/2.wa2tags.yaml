@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Data - S3 bucket for our data
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+
+    # don't delete this bucket when stack deleted, or updated
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+    Properties:
+      # baseline no access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # the default since Jan 2023, but cfn-guard does not know that
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 # or "aws:kms" if you want KMS
+
+      # provide native undo for delete/overwrites, but ^cost
+      VersioningConfiguration:
+        Status: Enabled
+
+      # keep access logs for audit/post-mortems
+      # should be modernized to use CloudTrail s3 data events with SIEM
+      LoggingConfiguration:
+        DestinationBucketName: !Ref DataBucketLogs
+        LogFilePrefix: data-bucket-access-logs/
+
+      Tags:
+        - Key: DataSensitivity
+          Value: Confidential # company data
+        - Key: DataCriticality
+          Value: BusinessCritical # major impact if we lose
+
+  # Bucket for server access logs
+  DataBucketLogs:
+    Type: AWS::S3::Bucket
+
+    # don't delete this bucket when stack deleted, or updated
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+    Metadata:
+      guard:
+        # we don't need to log access to the logs, or version (calm cfn-guard)
+        SuppressedRules:
+          - S3_BUCKET_LOGGING_ENABLED
+          - S3_BUCKET_VERSIONING_ENABLED
+
+    Properties:
+      # baseline no access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # the default since Jan 2023, but cfn-guard does not know that
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 # or "aws:kms" if you want KMS
+
+      Tags:
+        - Key: DataSensitivity
+          Value: Private # access logs can be revealing
+        - Key: DataCriticality
+          Value: NonCritical # not critical to daily ops
+
+Outputs:
+  DataBucketName:
+    Value: !Ref DataBucket
+  DataBucketArn:
+    Value: !GetAtt DataBucket.Arn

@@ -42,6 +42,7 @@ impl DocumentFormat {
 struct DocumentState {
 	text: String,
 	format: DocumentFormat,
+	cached_diagnostics: Vec<Diagnostic>,
 }
 
 /// core engine: owns all document state and analysis logic
@@ -74,7 +75,14 @@ impl CoreEngine {
 
 	pub fn on_open(&mut self, uri: Url, text: String, language_id: String) {
 		let format = DocumentFormat::from_language_id_or_path(Some(&language_id), &uri);
-		self.docs.insert(uri, DocumentState { text, format });
+		self.docs.insert(
+			uri,
+			DocumentState {
+				text,
+				format,
+				cached_diagnostics: vec![],
+			},
+		);
 	}
 
 	pub fn on_change(&mut self, uri: Url, new_text: String) {
@@ -90,13 +98,19 @@ impl CoreEngine {
 			DocumentState {
 				text: new_text,
 				format,
+				cached_diagnostics: vec![],
 			},
 		);
 	}
 
 	pub fn on_save(&mut self, _uri: &Url) {}
 
-	pub fn analyse_document_fast(&self, uri: &Url) -> Result<CfnTemplate, Vec<Diagnostic>> {
+	pub fn analyse_document_fast(&mut self, uri: &Url) -> Result<CfnTemplate, Vec<Diagnostic>> {
+		// always reset the cache so not stale
+		if let Some(doc_state) = self.docs.get_mut(uri) {
+			doc_state.cached_diagnostics.clear();
+		}
+
 		let doc = self.docs.get(uri).expect("document must have a uri");
 		let text = &doc.text;
 
@@ -148,12 +162,17 @@ impl CoreEngine {
 					Err(diagnostics)
 				}
 			}
-			Err(diagnostics) => Err(diagnostics),
+			Err(diagnostics) => {
+				if let Some(doc_state) = self.docs.get_mut(uri) {
+					doc_state.cached_diagnostics = diagnostics.clone();
+				}
+				Err(diagnostics)
+			}
 		}
 	}
 
 	/// Convert WA2 guidance into LSP diagnostics
-	pub fn analyse_document_slow(&self, template: &CfnTemplate) -> Vec<Diagnostic> {
+	pub fn analyse_document_slow(&mut self, template: &CfnTemplate, uri: &Url) -> Vec<Diagnostic> {
 		let system = match project_vendor_aws(template) {
 			Ok(system) => system,
 			Err(_) => return vec![], // If evaluation fails, return no diagnostics
@@ -162,7 +181,7 @@ impl CoreEngine {
 		let guides = system.guidance();
 
 		// Convert each guide to a diagnostic
-		guides
+		let diagnostics: Vec<Diagnostic> = guides
 			.into_iter()
 			.filter_map(|guide| {
 				// Get the node from the system to find its name
@@ -180,16 +199,32 @@ impl CoreEngine {
 					GuideLevel::Action => DiagnosticSeverity::WARNING,
 				};
 
+				// Store guide data in diagnostic.data for hover provider
+				let data = serde_json::json!({
+					"kind": "wa2_guide",
+					"tldr": guide.tldr,
+					"message": guide.message,
+					"why": guide.why,
+				});
+
 				Some(Diagnostic {
 					range: resource.logical_id_range,
 					severity: Some(severity),
 					code: Some(NumberOrString::String("WA2_GUIDE".into())),
 					source: Some("wa2".into()),
-					message: guide.tldr,
+					message: guide.tldr, // Short message in Problems panel
+					data: Some(data),    // Full data for hover
 					..Default::default()
 				})
 			})
-			.collect()
+			.collect();
+
+		// Cache the WA2 diagnostics
+		if let Some(doc_state) = self.docs.get_mut(uri) {
+			doc_state.cached_diagnostics = diagnostics.clone();
+		}
+
+		diagnostics
 	}
 
 	pub fn goto_definition(&self, uri: &Url, position: Position) -> Option<Location> {
@@ -254,6 +289,44 @@ impl CoreEngine {
 
 		None
 	}
+
+	pub fn get_hover_content(&self, uri: &Url, position: Position) -> Option<String> {
+		let doc = self.docs.get(uri)?;
+
+		// Find diagnostic at this position
+		for diag in &doc.cached_diagnostics {
+			if position_in_range(position, diag.range) {
+				// Extract guide data from diagnostic
+				if let Some(data) = &diag.data
+					&& let Ok(obj) = serde_json::from_value::<
+						serde_json::Map<String, serde_json::Value>,
+					>(data.clone()) && obj.get("kind").and_then(|v| v.as_str()) == Some("wa2_guide")
+				{
+					let tldr = obj.get("tldr").and_then(|v| v.as_str()).unwrap_or("");
+					let message = obj.get("message").and_then(|v| v.as_str()).unwrap_or("");
+					let why = obj.get("why").and_then(|v| v.as_str()).unwrap_or("");
+
+					// Format as Markdown
+					return Some(format!("## {}\n\n{}\n\n**Why?** {}", tldr, message, why));
+				}
+			}
+		}
+
+		None
+	}
+}
+
+fn position_in_range(pos: Position, range: Range) -> bool {
+	if pos.line < range.start.line || pos.line > range.end.line {
+		return false;
+	}
+	if pos.line == range.start.line && pos.character < range.start.character {
+		return false;
+	}
+	if pos.line == range.end.line && pos.character > range.end.character {
+		return false;
+	}
+	true
 }
 
 #[cfg(test)]

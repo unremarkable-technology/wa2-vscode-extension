@@ -11,12 +11,12 @@ pub fn evaluate_system_ok(template: &CfnTemplate) -> Result<(), NodeError> {
 	// PROJECT: vendor template into wa2 system
 	let system = project_vendor_aws(template)?;
 
-	println!("{}", PrettySystem { system: &system });
+	eprintln!("{}", PrettySystem { system: &system });
 
 	// GUIDANCE: is guidance requuired?
 	let guidance = system.guidance();
 
-	println!("{:?}", guidance);
+	eprintln!("{:?}", guidance);
 
 	// For now: treat any required guidance as failing the check.
 	if !guidance.is_empty() {
@@ -91,11 +91,20 @@ pub fn project_vendor_aws(template: &CfnTemplate) -> Result<System, NodeError> {
 		// Evidence: what resilience is in place?
 		if let Some((repl_val, _)) = resource.properties.get("ReplicationConfiguration")
 			&& let Some(repl_obj) = repl_val.as_object()
-			&& let Some((status_value, _)) = repl_obj.get("Status")
-			&& let CfnValue::String(value, _) = status_value
-			&& value == "Enabled"
+			&& let Some((rules_field, _)) = repl_obj.get("Rules")
+			&& let CfnValue::Array(rules, _) = rules_field
 		{
-			system.annotate(node, Annotation::Evidence(FocusTaxonomy::DataResiliance))?;
+			// can we find any rule that satisfies us
+			for rule in rules {
+				// need a rule that is at least enabled
+				if let CfnValue::Object(rule_obj, _) = rule
+					&& let Some((status_value, _)) = rule_obj.get("Status")
+					&& let CfnValue::String(value, _) = status_value
+					&& value == "Enabled"
+				{
+					system.annotate(node, Annotation::Evidence(FocusTaxonomy::DataResiliance))?;
+				}
+			}
 		}
 	}
 
@@ -149,11 +158,50 @@ mod tests {
 	#[test]
 	fn tutorial_step_0() {
 		println!("{}", env::current_dir().unwrap().display());
-		let path = Path::new("../../examples/tutorial/0.data.yaml");
+		let path = Path::new("../../examples/tutorial/0.naive.yaml");
 		let parse_result = parse_and_validate(path).expect("Failed to read/parse file");
 
 		if let ParseResult::Parsed { template } = parse_result {
-			evaluate_system_ok(&template).expect_err("system should evaluate ok");
+			evaluate_system_ok(&template).expect_err("not tagged");
+		} else {
+			panic!("Expected parsed template");
+		}
+	}
+
+	#[test]
+	fn tutorial_step_1() {
+		println!("{}", env::current_dir().unwrap().display());
+		let path = Path::new("../../examples/tutorial/1.calm.yaml");
+		let parse_result = parse_and_validate(path).expect("Failed to read/parse file");
+
+		if let ParseResult::Parsed { template } = parse_result {
+			evaluate_system_ok(&template).expect_err("not tagged");
+		} else {
+			panic!("Expected parsed template");
+		}
+	}
+
+	#[test]
+	fn tutorial_step_2() {
+		println!("{}", env::current_dir().unwrap().display());
+		let path = Path::new("../../examples/tutorial/2.wa2tags.yaml");
+		let parse_result = parse_and_validate(path).expect("Failed to read/parse file");
+
+		if let ParseResult::Parsed { template } = parse_result {
+			evaluate_system_ok(&template).expect_err("not backed up");
+		} else {
+			panic!("Expected parsed template");
+		}
+	}
+
+	#[test]
+	fn tutorial_step_3() {
+		println!("{}", env::current_dir().unwrap().display());
+		let path = Path::new("../../examples/tutorial/3.with-replication.yaml");
+		let parse_result = parse_and_validate(path).expect("Failed to read/parse file");
+
+		if let ParseResult::Parsed { template } = parse_result {
+			evaluate_system_ok(&template).expect("all good");
 		} else {
 			panic!("Expected parsed template");
 		}

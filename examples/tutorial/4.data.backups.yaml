@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: data backups - backup bucket with Object Lock + policy for replication from source
+
+Parameters:
+  SourceAccountId:
+    Type: String
+    Description: Account ID of the source account (A)
+  ReplicationRoleName:
+    Type: String
+    Default: s3-replication-role
+  RetentionDays:
+    Type: Number
+    Default: 35
+    MinValue: 1
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+
+    # don't delete this bucket when stack deleted, or updated
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+    Metadata:
+      guard:
+        # we don't need to log access to the logs, or version (calm cfn-guard)
+        SuppressedRules:
+          - S3_BUCKET_LOGGING_ENABLED
+          - S3_BUCKET_VERSIONING_ENABLED
+
+    Properties:
+      # baseline no access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # the default since Jan 2023, but cfn-guard does not know that
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 # or "aws:kms" if you want KMS
+
+      # provide native undo for delete/overwrites, but ^cost
+      # required for replication + object lock, but ^cost
+      VersioningConfiguration:
+        Status: Enabled
+
+      # enforce write-once-read-many semantics
+      # COMPLIANCE mode prevents anyone (including root) from shortening retention
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: COMPLIANCE
+            Days: !Ref RetentionDays
+
+      Tags:
+        - Key: DataSensitivity
+          Value: Confidential # backup of Confidential data
+        - Key: DataCriticality
+          Value: Important # this is a backup
+
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # allow only the source account's replication role to write
+          # no read or delete beyond replicated delete markers
+          - Sid: AllowReplicationFromSourceRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${SourceAccountId}:role/${ReplicationRoleName}"
+            Action:
+              - s3:ReplicateObject
+              - s3:ReplicateDelete
+              - s3:ReplicateTags
+              - s3:ObjectOwnerOverrideToBucketOwner
+            Resource: !Sub "${BackupBucket.Arn}/*"
+
+          # enforce TLS-only access (cfn-guard requirement)
+          # explicit deny for any request over insecure transport
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub "${BackupBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+Outputs:
+  BackupBucketName:
+    Value: !Ref BackupBucket
+  BackupBucketArn:
+    Value: !GetAtt BackupBucket.Arn

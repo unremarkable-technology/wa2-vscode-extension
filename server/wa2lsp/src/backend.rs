@@ -67,6 +67,7 @@ impl LanguageServer for Backend {
 				)),
 				code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
 				definition_provider: Some(OneOf::Left(true)),
+				hover_provider: Some(HoverProviderCapability::Simple(true)),
 				..Default::default()
 			},
 			server_info: Some(ServerInfo {
@@ -332,6 +333,25 @@ impl LanguageServer for Backend {
 
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
+
+	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+		let uri = params.text_document_position_params.text_document.uri;
+		let position = params.text_document_position_params.position;
+
+		// Get diagnostics at this position
+		let hover_content = {
+			let engine = self.engine.lock().unwrap();
+			engine.get_hover_content(&uri, position)
+		};
+
+		Ok(hover_content.map(|content| Hover {
+			contents: HoverContents::Markup(MarkupContent {
+				kind: MarkupKind::Markdown,
+				value: content,
+			}),
+			range: None,
+		}))
+	}
 }
 
 /// listens for work to do via notify, processing any
@@ -411,7 +431,7 @@ async fn analyser_loop(
 			// Analyse this uri using the latest text snapshot. We treat
 			// "no text" as a processed event (doc was closed / removed).
 			let parse_result = {
-				let engine_guard = engine.lock().unwrap();
+				let mut engine_guard = engine.lock().unwrap();
 				engine_guard.analyse_document_fast(&uri)
 			};
 
@@ -420,8 +440,8 @@ async fn analyser_loop(
 					// Fast path succeeded with no diagnostics
 					// Run slow path (WA2 guidance)
 					let wa2_diagnostics = {
-						let engine_guard = engine.lock().unwrap();
-						engine_guard.analyse_document_slow(&template)
+						let mut engine_guard = engine.lock().unwrap();
+						engine_guard.analyse_document_slow(&template, &uri)
 					};
 
 					// Publish WA2 guidance diagnostics
