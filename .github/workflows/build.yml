@@ -68,10 +68,9 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Write-Host "=== Searching for wa2lsp.exe ==="
-          Get-ChildItem -Path . -Recurse -Filter "wa2lsp.exe" -ErrorAction SilentlyContinue | Select-Object FullName
-          Write-Host "=== Target directory contents ==="
-          Get-ChildItem -Path "target\${{ matrix.target }}\release" -ErrorAction SilentlyContinue
+          $targetDir = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).target_directory
+          Write-Host "target_directory = $targetDir"
+          Get-ChildItem -Path $targetDir -Recurse -Filter "wa2lsp.exe" -ErrorAction SilentlyContinue | Select-Object FullName
 
       - name: Copy binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -83,8 +82,20 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path client/wa2/bin
-          Copy-Item target/${{ matrix.target }}/release/wa2lsp.exe client/wa2/bin/
+          New-Item -ItemType Directory -Force -Path client/wa2/bin | Out-Null
+
+          # Ask cargo where the target directory is
+          $targetDir = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).target_directory
+
+          $exe = Join-Path $targetDir "release\wa2lsp.exe"
+          if (-Not (Test-Path $exe)) {
+            Write-Host "wa2lsp.exe not found at $exe"
+            Write-Host "Searching for wa2lsp.exe under $targetDir"
+            Get-ChildItem -Path $targetDir -Recurse -Filter "wa2lsp.exe" -ErrorAction SilentlyContinue | Select-Object FullName
+            throw "wa2lsp.exe not found"
+          }
+
+          Copy-Item $exe client/wa2/bin/
 
       - name: Install npm dependencies
         working-directory: client/wa2
