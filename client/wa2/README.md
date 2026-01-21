@@ -1,24 +1,32 @@
-# WA2 — Fast CloudFormation Validation for VS Code
+# WA2 — AWS Well-Architected Guidance for VS Code
 
-Ultra-fast, accurate CloudFormation template validation powered by Rust. **9× faster than AWS Toolkit** with real-time error detection as you type.
+**Real-time CloudFormation validation + Well-Architected best practices** as you build infrastructure. Get instant feedback on both syntax errors and architectural decisions.
+
+Built by the creator of the AWS Well-Architected Framework.
 
 ---
 
 ## ✨ Features
 
-### Comprehensive Validation (71% Coverage)
-- **1000+ AWS resource types** - Official CloudFormation schemas
-- **Property validation** - Required properties, types, allowed values
+### Well-Architected Guidance
+- 🎯 **Intent-based validation** - Tag resources with sensitivity and criticality to unlock architectural guidance
+- 📚 **Educational tooltips** - Understand the "why" behind best practices, not just the "what"
+- ⚡ **Sub-second feedback** - No waiting for reviews or scans
+- 🔄 **Context-aware** - Recommendations adapt to your declared intent
+
+### Comprehensive CloudFormation Validation
+- **1000+ AWS resource types** - Official CloudFormation Registry schemas
+- **Property validation** - Required properties, types, allowed values  
 - **All intrinsic functions** - Ref, GetAtt, Sub, Join, If, FindInMap, and 10+ more
 - **AWS::LanguageExtensions** - Fn::ForEach, Transform support
 - **SAM/Serverless** - Transform-based resources
 - **Smart type checking** - Mirrors CloudFormation's coercion rules
 
 ### Developer Experience
-- ⚡ **Instant feedback** - Sub-second validation on large templates
+- ⚡ **9× faster than AWS Toolkit** - 0.37s vs 3.3s validation time
 - 🎯 **Accurate errors** - Precise line/column diagnostics
 - 💡 **Helpful suggestions** - "Did you mean X?" for typos
-- 🚀 **9× faster** - 0.37s vs 3.3s (AWS Toolkit)
+- 🔍 **Go-to-definition** - Jump from Ref/GetAtt to resource definitions
 
 ---
 
@@ -26,22 +34,43 @@ Ultra-fast, accurate CloudFormation template validation powered by Rust. **9× f
 
 1. **Install** - Search "WA2" in VS Code Extensions
 2. **Open** - Any CloudFormation `.yaml`, `.yml`, or `.json` file
-3. **Validate** - Errors and warnings appear automatically
+3. **Get guidance** - Errors, warnings, and architectural recommendations appear automatically
 
-**File detection**: Validates files with `AWSTemplateFormatVersion` or `Resources:` section.
+**Example**: Start with a simple S3 bucket. WA2 prompts you to tag it with DataSensitivity and DataCriticality. Once tagged, it recommends appropriate protections based on your intent.
 
 ---
 
 ## 📊 What's Validated
 
-✅ Resource types & properties  
-✅ Intrinsic functions (16+ functions)  
-✅ Ref/GetAtt targets  
-✅ Type checking with CloudFormation coercion  
-✅ Fn::ForEach loops  
-✅ Transform requirements  
+✅ CloudFormation syntax & resource types  
+✅ Property requirements & type checking  
+✅ Intrinsic functions (Ref, GetAtt, Sub, 13+ more)  
+✅ Well-Architected principles (data protection, resilience)  
+✅ Intent-based architectural guidance  
 
-**89% of valid CloudFormation templates pass validation**
+---
+
+## 💡 Well-Architected in Action
+
+**Without intent:**
+```yaml
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+```
+❌ WA2: "Tag this resource for DataSensitivity and DataCriticality"
+
+**With intent:**
+```yaml
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags:
+        - Key: DataCriticality
+          Value: BusinessCritical
+```
+💡 Hover for guidance: "Business critical data needs backup protection. Consider enabling versioning or cross-region replication."
 
 ---
 
@@ -61,3 +90,5 @@ AWS Toolkit: 3.33 seconds  █████████████████�
 - **Source**: [GitHub](https://github.com/unremarkable-technology/wa2-vscode-extension)
 
 ---
+
+**Built by the creator of the AWS Well-Architected Framework** • Shift left on architecture reviews

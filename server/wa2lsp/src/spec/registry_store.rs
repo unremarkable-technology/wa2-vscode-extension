@@ -397,6 +397,7 @@ fn verify_ec2_instance_oneof_captured() {
 
 	let cache_dir = dirs::cache_dir().unwrap().join("wa2/cfn-spec");
 	let ec2_schema = cache_dir.join("aws-ec2-instance.json");
+	eprintln!("file: {:?}", ec2_schema);
 	let content = fs::read_to_string(&ec2_schema).expect("Can read EC2 schema");
 
 	// Parse the schema

@@ -1120,6 +1120,7 @@ Resources:
 
 	// Load spec - we'll just check one file
 	let ec2_schema = cache_dir.join("aws-ec2-instance.json");
+	eprintln!("file: {:?}", ec2_schema);
 	let content = fs::read_to_string(&ec2_schema).expect("Schema exists");
 
 	let parsed =

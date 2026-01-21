@@ -1,8 +1,8 @@
 {
 	"name": "wa2",
-	"displayName": "WA2",
-	"description": "Fast CloudFormation validation powered by Rust",
-	"version": "0.0.16",
+	"displayName": "WA2 - AWS Well-Architected",
+	"description": "CloudFormation validation + Well-Architected best practices. Real-time architectural guidance as you build.",
+	"version": "0.0.18",
 	"engines": {
 		"vscode": "^1.95.0"
 	},
@@ -10,6 +10,15 @@
 	"categories": [
 		"Programming Languages",
 		"Linters"
+	],
+	"keywords": [
+		"cloudformation",
+		"aws",
+		"well-architected",
+		"infrastructure",
+		"iaac",
+		"cloud",
+		"validation"
 	],
 	"repository": {
 		"type": "git",
@@ -20,8 +29,8 @@
 		"vscode:prepublish": "npm run bundle && npm run copy-server",
 		"compile": "tsc -p ./",
 		"bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
-		"build-server": "cd ../../server/wa2lsp && cargo build --release",
-		"copy-server": "mkdir -p bin && cp \"${CARGO_TARGET_DIR:-../../server/wa2lsp/target}/release/wa2lsp\" bin/ || echo 'Binary not found, please run: npm run build-server first'",
+		"build-server": "toolbox run -c rust bash -lc 'cd ../../server/wa2lsp && cargo build --release'",
+		"copy-server": "mkdir -p bin && cp /var/mnt/volatile/build/wa2/release/wa2lsp bin/ || echo 'Binary not found, please run: npm run build-server first'",
 		"watch": "tsc -watch -p ./",
 		"pretest": "npm run compile && npm run lint",
 		"lint": "eslint src",

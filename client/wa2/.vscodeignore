@@ -1,13 +1,20 @@
-.vscode/**
+# test runtime junk
+.vscode-test
 .vscode-test/**
-src/**
+.vscode-test.mjs
+
+# dev-only stuff
+**/*.ts
+**/*.map
 node_modules/**
+.vscode/**
+
+src/**
 .gitignore
 tsconfig.json
 eslint.config.mjs
-**/*.map
-**/*.ts
 *.vsix
 update.sh
 out/test/**
 !bin/wa2lsp
+.vscode/**

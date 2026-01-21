@@ -1,27 +1,43 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+RUST_TB="rust"
+NODE_TB="node"
 
 echo "Building wa2lsp server..."
-cd ../../server/wa2lsp
-cargo build --release
-cd ../../client/wa2
+toolbox run -c "$RUST_TB" bash -lc "
+  cd \"$ROOT/../../server/wa2lsp\"
+  cargo build --release
+"
 
 echo "Copying binary to bin/..."
-mkdir -p bin
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-../../server/wa2lsp/target}"
-cp "$CARGO_TARGET_DIR/release/wa2lsp" bin/
+mkdir -p "$ROOT/bin"
 
-echo "Current version: $(node -p "require('./package.json').version")"
-read -p "Bump to (patch/minor/major): " bump_type
-npm version $bump_type
+VOLATILE_TARGET_DIR="/var/mnt/volatile/build/wa2"
+SERVER_BIN="$VOLATILE_TARGET_DIR/release/wa2lsp"
 
-NEW_VERSION=$(node -p "require('./package.json').version")
+if [[ ! -x "$SERVER_BIN" ]]; then
+  echo "ERROR: expected server binary at: $SERVER_BIN"
+  echo "Did cargo build --release succeed?"
+  exit 1
+fi
+
+cp "$SERVER_BIN" "$ROOT/bin/"
+
+echo "Current version: $(toolbox run -c "$NODE_TB" bash -lc "cd \"$ROOT\" && node -p \"require('./package.json').version\"")"
+read -r -p "Bump to (patch/minor/major): " bump_type
+
+toolbox run -c "$NODE_TB" bash -lc "
+  cd \"$ROOT\"
+  npm version \"$bump_type\"
+  echo \"Packaging extension...\"
+  npx @vscode/vsce package --allow-package-all-secrets
+"
+
+NEW_VERSION="$(toolbox run -c "$NODE_TB" bash -lc "cd \"$ROOT\" && node -p \"require('./package.json').version\"")"
 echo "New version: $NEW_VERSION"
-
-echo "Packaging extension..."
-npx @vscode/vsce package
-
-echo ""
 echo "✅ Extension packaged successfully!"
 echo "📦 To publish: npx @vscode/vsce publish"
 echo "🏷️  Or create git tag: git tag v$NEW_VERSION && git push origin v$NEW_VERSION"

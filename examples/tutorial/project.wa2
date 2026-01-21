@@ -1,0 +1,29 @@
+#!/usr/bin/env wa2
+!version 0.1
+
+// -----------------------------------------------------------------------------
+// Source context (applies to this document)
+// -----------------------------------------------------------------------------
+source {
+	template = "tutorial.yml"
+}
+
+// -----------------------------------------------------------------------------
+// User resources (mapped from CloudFormation)
+// -----------------------------------------------------------------------------
+
+@#source/cfn(name: "DataBucketLogs", line: 43)
+new DataBucketLogs: vendor/aws/s3/bucket {
+	// Tags[Key = "DataSensitivity" && Value = "Private"]
+	sensitivity = Private
+	
+	criticality = NonCritical
+	// protection missing → policy violation
+}
+
+@#source/cfn(name: "DataBucket", line: 5)
+new DataBucket: vendor/aws/s3/bucket {
+	sensitivity = Sensitive
+	criticality = BusinessCritical
+	// protection missing → policy violation
+}
