@@ -49,8 +49,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Set Cargo target dir (CI)
+      - name: Set Cargo target dir (CI) - Unix
+        if: matrix.os != 'windows-latest'
         run: echo "CARGO_TARGET_DIR=${{ github.workspace }}/target" >> $GITHUB_ENV
+
+      - name: Set Cargo target dir (CI) - Windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          "CARGO_TARGET_DIR=${{ github.workspace }}\target" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Debug CARGO_TARGET_DIR (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Write-Host "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
 
       - name: Build LSP server
         working-directory: server/wa2lsp
@@ -83,19 +96,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path client/wa2/bin | Out-Null
-
-          # Ask cargo where the target directory is
-          $targetDir = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).target_directory
-
-          $exe = Join-Path $targetDir "release\wa2lsp.exe"
-          if (-Not (Test-Path $exe)) {
-            Write-Host "wa2lsp.exe not found at $exe"
-            Write-Host "Searching for wa2lsp.exe under $targetDir"
-            Get-ChildItem -Path $targetDir -Recurse -Filter "wa2lsp.exe" -ErrorAction SilentlyContinue | Select-Object FullName
-            throw "wa2lsp.exe not found"
-          }
-
-          Copy-Item $exe client/wa2/bin/
+          Copy-Item "target\${{ matrix.target }}\release\wa2lsp.exe" "client\wa2\bin\"
 
       - name: Install npm dependencies
         working-directory: client/wa2
