@@ -399,6 +399,9 @@ fn verify_ec2_instance_oneof_captured() {
 	let ec2_schema = cache_dir.join("aws-ec2-instance.json");
 	eprintln!("file: {:?}", ec2_schema);
 	let content = fs::read_to_string(&ec2_schema).expect("Can read EC2 schema");
+	// the cfn_spec_*.json is actually a zip file
+	// for this test to work we need to extract (normal use does not require that)
+	// unzip cfn_spec_*.json
 
 	// Parse the schema
 	let parsed = parse_resource_schema("aws-ec2-instance.json", &content)
