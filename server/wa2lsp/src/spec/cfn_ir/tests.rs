@@ -380,7 +380,7 @@ Resources:
 
 	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
 	let spec = create_test_spec();
-	let diags = template.validate_against_spec(&spec, &test_uri());
+	let diags = template.validate_against_spec(&spec);
 
 	assert_eq!(diags.len(), 1);
 	assert!(
@@ -404,7 +404,7 @@ Resources:
 
 	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
 	let spec = create_test_spec();
-	let diags = template.validate_against_spec(&spec, &test_uri());
+	let diags = template.validate_against_spec(&spec);
 
 	assert_eq!(diags.len(), 1);
 	assert!(diags[0].message.contains("Unknown property")); // Changed capitalization
@@ -423,7 +423,7 @@ Resources:
 
 	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
 	let spec = create_test_spec();
-	let diags = template.validate_against_spec(&spec, &test_uri());
+	let diags = template.validate_against_spec(&spec);
 
 	assert_eq!(diags.len(), 1);
 	assert!(diags[0].message.contains("missing required property"));
@@ -443,7 +443,7 @@ Resources:
 
 	let template = CfnTemplate::from_yaml(text, &test_uri()).unwrap();
 	let spec = create_test_spec();
-	let diags = template.validate_against_spec(&spec, &test_uri());
+	let diags = template.validate_against_spec(&spec);
 
 	assert_eq!(diags.len(), 0);
 }
@@ -810,7 +810,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec(); // Changed from new_empty()
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(diagnostics.iter().any(|d| {
 		d.code == Some(NumberOrString::String("WA2_CFN_INVALID_REF".into()))
@@ -833,7 +833,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec(); // Changed
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(
 		!diagnostics
@@ -859,7 +859,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec(); // Changed
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(
 		!diagnostics
@@ -881,7 +881,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec(); // Changed
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(
 		!diagnostics
@@ -903,7 +903,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec(); // Changed
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(diagnostics.iter().any(|d| {
 		d.code
@@ -978,7 +978,7 @@ Resources:
 
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
-	let diagnostics = template.validate_against_spec(&spec, &uri);
+	let diagnostics = template.validate_against_spec(&spec);
 
 	assert!(
 		diagnostics.iter().any(|d| {
@@ -1009,7 +1009,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec, &uri);
+	let diagnostics = template.validate_against_spec(&spec);
 
 	// Should not have type mismatch - String parameter to String property is valid
 	assert!(
@@ -1066,7 +1066,7 @@ Resources:
 
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
-	let diagnostics = template.validate_against_spec(&spec, &uri);
+	let diagnostics = template.validate_against_spec(&spec);
 
 	assert!(
 		diagnostics.iter().any(|d| {
@@ -1125,7 +1125,7 @@ Resources:
 
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
-	let diagnostics = template.validate_against_spec(&spec, &uri);
+	let diagnostics = template.validate_against_spec(&spec);
 
 	// Should not have invalid attribute error
 	assert!(
@@ -1188,7 +1188,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(diagnostics.iter().any(|d| {
 		d.code
@@ -1304,7 +1304,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	// Should NOT have any Select index errors
 	assert!(
@@ -1333,7 +1333,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(diagnostics.iter().any(|d| {
 		d.code
@@ -1412,7 +1412,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(diagnostics.iter().any(|d| {
 		d.code
@@ -1439,7 +1439,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	// Should NOT have any If condition errors
 	assert!(
@@ -1647,7 +1647,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	assert!(diagnostics.iter().any(|d| {
 		d.code
@@ -1674,7 +1674,7 @@ Resources:
 	let uri = test_uri();
 	let template = CfnTemplate::from_yaml(text, &uri).unwrap();
 	let spec_store = create_test_spec();
-	let diagnostics = template.validate_against_spec(&spec_store, &uri);
+	let diagnostics = template.validate_against_spec(&spec_store);
 
 	// Should NOT have any Condition reference errors
 	assert!(

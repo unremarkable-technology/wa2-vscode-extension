@@ -6,12 +6,11 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::{
-	intents::{evaluator::project_vendor_aws, system::GuideLevel},
-	spec::{
+	intents::evaluator::{GuideLevel, guidance, project_vendor_aws}, spec::{
 		cfn_ir::{parser::CfnParser, types::CfnTemplate},
 		spec_store::SpecStore,
 		symbol_table::SymbolTable,
-	},
+	}
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -153,7 +152,7 @@ impl CoreEngine {
 
 				// Validate against spec if available
 				if let Some(spec) = self.spec_store() {
-					diagnostics.extend(template.validate_against_spec(spec, uri));
+					diagnostics.extend(template.validate_against_spec(spec));
 				}
 
 				if diagnostics.is_empty() {
@@ -173,12 +172,12 @@ impl CoreEngine {
 
 	/// Convert WA2 guidance into LSP diagnostics
 	pub fn analyse_document_slow(&mut self, template: &CfnTemplate, uri: &Url) -> Vec<Diagnostic> {
-		let system = match project_vendor_aws(template) {
-			Ok(system) => system,
+		let model = match project_vendor_aws(template) {
+			Ok(model) => model,
 			Err(_) => return vec![], // If evaluation fails, return no diagnostics
 		};
 
-		let guides = system.guidance();
+		let guides = guidance(&model);
 
 		// Convert each guide to a diagnostic
 		let diagnostics: Vec<Diagnostic> = guides

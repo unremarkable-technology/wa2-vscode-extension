@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
-use url::Url;
 
 use crate::spec::{
 	cfn_ir::types::{CfnTemplate, CfnValue},
@@ -44,7 +43,7 @@ fn create_diagnostic_with_suggestion(
 
 impl CfnTemplate {
 	/// Validate this template against the CloudFormation spec
-	pub fn validate_against_spec(&self, spec_store: &SpecStore, _uri: &Url) -> Vec<Diagnostic> {
+	pub fn validate_against_spec(&self, spec_store: &SpecStore) -> Vec<Diagnostic> {
 		let mut diagnostics = Vec::new();
 
 		// Build symbol table for intrinsic validation
@@ -54,8 +53,6 @@ impl CfnTemplate {
 		for (logical_id, resource) in &self.resources {
 			let type_id = ResourceTypeId(resource.resource_type.clone());
 			let type_str = &resource.resource_type;
-
-			//println!("\n{} ({})\n======\n", logical_id, type_str);
 
 			// Skip ForEach constructs - but validate they have the required transform
 			if type_str.starts_with("AWS::LanguageExtensions::ForEach") {
@@ -145,6 +142,8 @@ impl CfnTemplate {
 				Some(spec) => spec,
 				None => continue,
 			};
+
+			println!("\n{} ({})\n======\n{:?}", logical_id, type_str, resource_spec);
 
 			// Check for required properties
 			for (prop_name, prop_spec) in &resource_spec.properties {
@@ -1145,7 +1144,7 @@ Resources:
 	};
 
 	// Validate
-	let diagnostics = template.validate_against_spec(&spec, &uri);
+	let diagnostics = template.validate_against_spec(&spec);
 
 	eprintln!("\n=== Diagnostics ===");
 	for diag in &diagnostics {

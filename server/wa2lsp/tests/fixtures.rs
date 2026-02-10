@@ -50,7 +50,7 @@ fn parse_and_validate(path: &Path) -> datatest_stable::Result<ParseResult> {
 		Err(parse_diags) => Ok(ParseResult::ParseError(parse_diags)),
 		Ok(template) => {
 			let spec = use_latest_cfn_spec();
-			let diags = template.validate_against_spec(&spec, &uri);
+			let diags = template.validate_against_spec(&spec);
 			Ok(ParseResult::Parsed { template, diags })
 		}
 	}
