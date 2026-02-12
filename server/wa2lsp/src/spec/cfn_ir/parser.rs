@@ -4,7 +4,7 @@ use crate::spec::{
 	cfn_ir::types::{CfnAssertion, CfnMapping, CfnOutput, CfnRule},
 	intrinsics::IntrinsicKind,
 };
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 use url::Url;
 
@@ -170,8 +170,8 @@ fn parse_resources<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
 	uri: &Url,
-) -> ParseResult<HashMap<String, CfnResource>> {
-	let mut resources: HashMap<String, CfnResource> = HashMap::new();
+) -> ParseResult<IndexMap<String, CfnResource>> {
+	let mut resources: IndexMap<String, CfnResource> = IndexMap::new();
 	let mut errors = Vec::new();
 
 	// Get all resources with key ranges
@@ -229,7 +229,7 @@ fn parse_resources<P: CfnParser>(
 
 		// Try to insert - if key exists, it's a duplicate
 		match resources.entry(logical_id.clone()) {
-			std::collections::hash_map::Entry::Occupied(entry) => {
+			indexmap::map::Entry::Occupied(entry) => {
 				// Duplicate key found
 				let first_range = entry.get().logical_id_range;
 				errors.push(Diagnostic {
@@ -261,7 +261,7 @@ fn parse_resources<P: CfnParser>(
 					}
 				}
 			}
-			std::collections::hash_map::Entry::Vacant(entry) => {
+			indexmap::map::Entry::Vacant(entry) => {
 				// First occurrence
 				match parse_resource(parser, &logical_id, &resource_node, key_range, uri) {
 					Ok(resource) => {
@@ -465,7 +465,7 @@ fn parse_resource<P: CfnParser>(
 	let properties = if let Some(props_node) = parser.object_get(node, "Properties") {
 		parse_properties(parser, &props_node)?
 	} else {
-		HashMap::new()
+		IndexMap::new()
 	};
 
 	Ok(CfnResource {
@@ -480,15 +480,15 @@ fn parse_resource<P: CfnParser>(
 fn parse_properties<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
-) -> ParseResult<HashMap<String, (CfnValue, Range)>> {
-	let mut properties = HashMap::new();
+) -> ParseResult<IndexMap<String, (CfnValue, Range)>> {
+	let mut properties = IndexMap::new();
 
 	// Get all properties as key-value pairs
 	let entries = match parser.object_entries(node) {
 		Some(entries) => entries,
 		None => {
 			// If Properties isn't an object, return empty map and let validation handle it
-			return Ok(HashMap::new());
+			return Ok(IndexMap::new());
 		}
 	};
 
@@ -506,8 +506,8 @@ fn parse_parameters<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
 	uri: &Url,
-) -> ParseResult<HashMap<String, CfnParameter>> {
-	let mut parameters: HashMap<String, CfnParameter> = HashMap::new();
+) -> ParseResult<IndexMap<String, CfnParameter>> {
+	let mut parameters: IndexMap<String, CfnParameter> = IndexMap::new();
 	let mut errors = Vec::new();
 
 	// Use object_entries_with_ranges to get key ranges
@@ -554,7 +554,7 @@ fn parse_parameters<P: CfnParser>(
 
 		// Try to insert - if key exists, it's a duplicate
 		match parameters.entry(param_name.clone()) {
-			std::collections::hash_map::Entry::Occupied(entry) => {
+			indexmap::map::Entry::Occupied(entry) => {
 				let first_range = entry.get().name_range;
 				errors.push(Diagnostic {
 					range: name_range,
@@ -584,7 +584,7 @@ fn parse_parameters<P: CfnParser>(
 					}
 				}
 			}
-			std::collections::hash_map::Entry::Vacant(entry) => {
+			indexmap::map::Entry::Vacant(entry) => {
 				match parse_parameter(parser, &param_name, &param_node, name_range, uri) {
 					Ok(param) => {
 						entry.insert(param);
@@ -665,8 +665,8 @@ fn parse_conditions<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
 	uri: &Url,
-) -> ParseResult<HashMap<String, CfnCondition>> {
-	let mut conditions: HashMap<String, CfnCondition> = HashMap::new();
+) -> ParseResult<IndexMap<String, CfnCondition>> {
+	let mut conditions: IndexMap<String, CfnCondition> = IndexMap::new();
 	let mut errors = Vec::new();
 
 	// Use object_entries_with_ranges to get key ranges
@@ -713,7 +713,7 @@ fn parse_conditions<P: CfnParser>(
 
 		// Try to insert - if key exists, it's a duplicate
 		match conditions.entry(condition_name.clone()) {
-			std::collections::hash_map::Entry::Occupied(entry) => {
+			indexmap::map::Entry::Occupied(entry) => {
 				let first_range = entry.get().name_range;
 				errors.push(Diagnostic {
 					range: name_range,
@@ -743,7 +743,7 @@ fn parse_conditions<P: CfnParser>(
 					}
 				}
 			}
-			std::collections::hash_map::Entry::Vacant(entry) => {
+			indexmap::map::Entry::Vacant(entry) => {
 				match parse_condition(parser, &condition_name, &condition_node, name_range, uri) {
 					Ok(condition) => {
 						entry.insert(condition);
@@ -784,8 +784,8 @@ fn parse_mappings<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
 	uri: &Url,
-) -> ParseResult<HashMap<String, CfnMapping>> {
-	let mut mappings: HashMap<String, CfnMapping> = HashMap::new();
+) -> ParseResult<IndexMap<String, CfnMapping>> {
+	let mut mappings: IndexMap<String, CfnMapping> = IndexMap::new();
 	let mut errors = Vec::new();
 
 	// Get all mappings including invalid keys
@@ -833,7 +833,7 @@ fn parse_mappings<P: CfnParser>(
 
 		// Try to insert - if key exists, it's a duplicate
 		match mappings.entry(mapping_name.clone()) {
-			std::collections::hash_map::Entry::Occupied(entry) => {
+			indexmap::map::Entry::Occupied(entry) => {
 				let first_range = entry.get().name_range;
 				errors.push(Diagnostic {
 					range: name_range,
@@ -863,7 +863,7 @@ fn parse_mappings<P: CfnParser>(
 					}
 				}
 			}
-			std::collections::hash_map::Entry::Vacant(entry) => {
+			indexmap::map::Entry::Vacant(entry) => {
 				match parse_mapping(parser, &mapping_name, &mapping_node, name_range, uri) {
 					Ok(mapping) => {
 						entry.insert(mapping);
@@ -909,7 +909,7 @@ fn parse_mapping<P: CfnParser>(
 		}
 	};
 
-	let mut map = HashMap::new();
+	let mut map = IndexMap::new();
 
 	for (top_key, second_level_node) in top_level_entries {
 		let second_level_entries = match parser.object_entries(&second_level_node) {
@@ -929,7 +929,7 @@ fn parse_mapping<P: CfnParser>(
 			}
 		};
 
-		let mut second_level_map = HashMap::new();
+		let mut second_level_map = IndexMap::new();
 		for (second_key, value_node) in second_level_entries {
 			let value = parse_value(parser, &value_node)?;
 			second_level_map.insert(second_key, value);
@@ -949,8 +949,8 @@ fn parse_rules<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
 	uri: &Url,
-) -> ParseResult<HashMap<String, CfnRule>> {
-	let mut rules: HashMap<String, CfnRule> = HashMap::new();
+) -> ParseResult<IndexMap<String, CfnRule>> {
+	let mut rules: IndexMap<String, CfnRule> = IndexMap::new();
 	let mut errors = Vec::new();
 
 	// Get all rules including invalid keys
@@ -995,7 +995,7 @@ fn parse_rules<P: CfnParser>(
 
 		// Try to insert - if key exists, it's a duplicate
 		match rules.entry(rule_name.clone()) {
-			std::collections::hash_map::Entry::Occupied(entry) => {
+			indexmap::map::Entry::Occupied(entry) => {
 				let first_range = entry.get().name_range;
 				errors.push(Diagnostic {
 					range: name_range,
@@ -1025,7 +1025,7 @@ fn parse_rules<P: CfnParser>(
 					}
 				}
 			}
-			std::collections::hash_map::Entry::Vacant(entry) => {
+			indexmap::map::Entry::Vacant(entry) => {
 				match parse_rule(parser, &rule_name, &rule_node, name_range, uri) {
 					Ok(rule) => {
 						entry.insert(rule);
@@ -1100,8 +1100,8 @@ fn parse_outputs<P: CfnParser>(
 	parser: &P,
 	node: &P::Node,
 	uri: &Url,
-) -> ParseResult<HashMap<String, CfnOutput>> {
-	let mut outputs: HashMap<String, CfnOutput> = HashMap::new();
+) -> ParseResult<IndexMap<String, CfnOutput>> {
+	let mut outputs: IndexMap<String, CfnOutput> = IndexMap::new();
 	let mut errors = Vec::new();
 
 	let entries = match parser.object_entries_with_ranges(node) {
@@ -1144,7 +1144,7 @@ fn parse_outputs<P: CfnParser>(
 		}
 
 		match outputs.entry(output_name.clone()) {
-			std::collections::hash_map::Entry::Occupied(entry) => {
+			indexmap::map::Entry::Occupied(entry) => {
 				let first_range = entry.get().name_range;
 				errors.push(Diagnostic {
 					range: name_range,
@@ -1174,7 +1174,7 @@ fn parse_outputs<P: CfnParser>(
 					}
 				}
 			}
-			std::collections::hash_map::Entry::Vacant(entry) => {
+			indexmap::map::Entry::Vacant(entry) => {
 				match parse_output(parser, &output_name, &output_node, name_range) {
 					Ok(output) => {
 						entry.insert(output);
@@ -1322,7 +1322,7 @@ fn parse_value<P: CfnParser>(parser: &P, node: &P::Node) -> ParseResult<CfnValue
 
 	// Try object (regular object, not intrinsic)
 	if let Some(entries) = parser.object_entries(node) {
-		let mut map = HashMap::new();
+		let mut map = IndexMap::new();
 		for (key, value_node) in entries {
 			let value = parse_value(parser, &value_node)?;
 			let key_range = parser.node_range(&value_node);
@@ -1670,7 +1670,7 @@ fn parse_transform<P: CfnParser>(
 			parse_value(parser, &p)?
 		} else {
 			// Parameters is optional, default to empty object
-			CfnValue::Object(HashMap::new(), range)
+			CfnValue::Object(IndexMap::new(), range)
 		};
 
 		return Ok(CfnValue::Transform {

@@ -1013,9 +1013,6 @@ fn print_node(
 		print_node(out, model, child, depth + 1, visited);
 	}
 
-	// Sort by entity ID to show in creation order
-	linked_entities.sort_by_key(|(_, child_id)| *child_id);
-
 	// Then print entities linked via other predicates
 	for (pred_name, child_id) in linked_entities {
 		writeln!(out, "{}  -{}-", indent, pred_name).unwrap();

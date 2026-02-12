@@ -1,7 +1,6 @@
 //! CloudFormation IR to Model projection
 
-use std::collections::HashMap;
-
+use indexmap::IndexMap;
 use tower_lsp::lsp_types::{Position, Range};
 
 use crate::intents::model::{EntityId, Model, ModelError};
@@ -534,7 +533,7 @@ fn project_array_item(
 pub fn project_parameters(
     model: &mut Model,
     template_entity: EntityId,
-    parameters: &HashMap<String, CfnParameter>,
+    parameters: &IndexMap<String, CfnParameter>,
 ) -> Result<(), ModelError> {
     if parameters.is_empty() {
         return Ok(());
@@ -600,7 +599,7 @@ pub fn project_pseudo_parameters(
 pub fn project_outputs(
     model: &mut Model,
     template_entity: EntityId,
-    outputs: &HashMap<String, CfnOutput>,
+    outputs: &IndexMap<String, CfnOutput>,
 ) -> Result<(), ModelError> {
     if outputs.is_empty() {
         return Ok(());

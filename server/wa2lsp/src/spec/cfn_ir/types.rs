@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use tower_lsp::lsp_types::Range;
 
@@ -6,12 +6,12 @@ use tower_lsp::lsp_types::Range;
 // Update CfnTemplate struct
 #[derive(Debug, Clone, Default)]
 pub struct CfnTemplate {
-	pub resources: HashMap<String, CfnResource>,
-	pub parameters: HashMap<String, CfnParameter>,
-	pub conditions: HashMap<String, CfnCondition>,
-	pub mappings: HashMap<String, CfnMapping>,
-	pub rules: HashMap<String, CfnRule>,
-   pub outputs: HashMap<String, CfnOutput>,
+	pub resources: IndexMap<String, CfnResource>,
+	pub parameters: IndexMap<String, CfnParameter>,
+	pub conditions: IndexMap<String, CfnCondition>,
+	pub mappings: IndexMap<String, CfnMapping>,
+	pub rules: IndexMap<String, CfnRule>,
+   pub outputs: IndexMap<String, CfnOutput>,
 	pub transform: Option<Vec<String>>,
 }
 
@@ -20,7 +20,7 @@ pub struct CfnTemplate {
 pub struct CfnResource {
 	pub logical_id: String,
 	pub resource_type: String,
-	pub properties: HashMap<String, (CfnValue, Range)>,
+	pub properties: IndexMap<String, (CfnValue, Range)>,
 
 	// Position tracking for diagnostics
 	pub logical_id_range: Range,
@@ -54,7 +54,7 @@ pub struct CfnCondition {
 #[derive(Debug, Clone)]
 pub struct CfnMapping {
 	pub name: String,
-	pub map: HashMap<String, HashMap<String, CfnValue>>, // Top-level key -> Second-level key -> Value
+	pub map: IndexMap<String, IndexMap<String, CfnValue>>, // Top-level key -> Second-level key -> Value
 
 	// Position tracking
 	pub name_range: Range,
@@ -124,7 +124,7 @@ pub enum CfnValue {
 	Bool(bool, Range),
 	Null(Range),
 	Array(Vec<CfnValue>, Range),
-	Object(HashMap<String, (CfnValue, Range)>, Range),
+	Object(IndexMap<String, (CfnValue, Range)>, Range),
 
 	/// !Ref / { "Ref": "LogicalId" }
 	Ref {
@@ -142,7 +142,7 @@ pub enum CfnValue {
 	// !Sub / { "Fn::Sub": "template string" } or { "Fn::Sub": ["template", {vars}] }
 	Sub {
 		template: Box<CfnValue>,
-		variables: Option<HashMap<String, CfnValue>>, // For long form with explicit variables
+		variables: Option<IndexMap<String, CfnValue>>, // For long form with explicit variables
 		range: Range,
 	},
 
@@ -329,7 +329,7 @@ impl CfnValue {
 	}
 
 	// Return the map with (value, key_range) tuples
-	pub fn as_object(&self) -> Option<&HashMap<String, (CfnValue, Range)>> {
+	pub fn as_object(&self) -> Option<&IndexMap<String, (CfnValue, Range)>> {
 		match self {
 			CfnValue::Object(map, _) => Some(map),
 			_ => None,
@@ -337,7 +337,7 @@ impl CfnValue {
 	}
 
 	// Helper to get just values (for backward compatibility where ranges aren't needed)
-	pub fn as_object_values(&self) -> Option<HashMap<String, CfnValue>> {
+	pub fn as_object_values(&self) -> Option<IndexMap<String, CfnValue>> {
 		match self {
 			CfnValue::Object(map, _) => Some(
 				map.iter()
