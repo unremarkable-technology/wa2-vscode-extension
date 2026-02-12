@@ -6,7 +6,7 @@ mod tests {
 
 	use url::Url;
 
-	use crate::{intents::{guidance::{FocusTaxonomy, guidance, has_evidence}, model::{Query, print_model_as_tree}, vendor::{Method, Vendor, get_projector}}, spec::{
+	use crate::{intents::{guidance::{FocusTaxonomy, guidance, has_evidence}, model::{Query, print_model_as_tree}, vendor::{DocumentFormat, Method, Vendor, get_projector}}, spec::{
 		spec_cache::SpecCacheManager, spec_source::SpecSource, spec_store::SpecStore,
 	}};
 
@@ -31,49 +31,6 @@ mod tests {
 			.clone()
 	}
 
-	/// Simplified resource for unit testing (mirrors CfnResource structure)
-	#[derive(Debug, Clone)]
-	struct TestResource {
-		logical_id: String,
-		resource_type: String,
-		tags: Vec<(String, String)>,
-		has_replication: bool,
-	}
-
-	impl TestResource {
-		fn new(logical_id: &str, resource_type: &str) -> Self {
-			Self {
-				logical_id: logical_id.to_string(),
-				resource_type: resource_type.to_string(),
-				tags: Vec::new(),
-				has_replication: false,
-			}
-		}
-
-		fn with_tag(mut self, key: &str, value: &str) -> Self {
-			self.tags.push((key.to_string(), value.to_string()));
-			self
-		}
-
-		fn with_replication(mut self) -> Self {
-			self.has_replication = true;
-			self
-		}
-	}
-
-	#[derive(Debug)]
-	enum TemplateError {
-		Parse(Vec<tower_lsp::lsp_types::Diagnostic>),
-		Validation(Vec<tower_lsp::lsp_types::Diagnostic>),
-	}
-
-	impl std::fmt::Display for TemplateError {
-		fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-			write!(f, "{self:?}")
-		}
-	}
-	impl std::error::Error for TemplateError {}
-
 	fn test_uri() -> Url {
 		Url::parse("file:///tmp/test.yaml").unwrap()
 	}
@@ -96,7 +53,7 @@ Resources:
 
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -127,7 +84,7 @@ Resources:
 
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -168,7 +125,7 @@ Resources:
 
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -206,7 +163,7 @@ Resources:
 
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -252,7 +209,7 @@ Resources:
 
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -282,7 +239,7 @@ Resources:
 
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -304,7 +261,7 @@ Resources:
 		let cfn_text = std::fs::read_to_string(path).unwrap();
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -327,7 +284,7 @@ Resources:
 		let cfn_text = std::fs::read_to_string(path).unwrap();
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -350,7 +307,7 @@ Resources:
 		let cfn_text = std::fs::read_to_string(path).unwrap();
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;
@@ -372,7 +329,7 @@ Resources:
 		let cfn_text = std::fs::read_to_string(path).unwrap();
 		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
 		let model = projector
-			.project(&cfn_text, &test_uri())
+			.project(&cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.ok()
 			.unwrap()
 			.model;

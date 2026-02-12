@@ -843,13 +843,48 @@ impl Model {
 	}
 
 	/// Find entity at a given position (for go-to-definition, hover)
+	/// When multiple entities contain the position, returns the one with the smallest range
 	pub fn entity_at_position(&self, position: tower_lsp::lsp_types::Position) -> Option<EntityId> {
+		let mut best: Option<(EntityId, Range)> = None;
+
 		for (&entity_id, &range) in &self.source_ranges {
 			if Self::position_in_range(position, range) {
-				return Some(entity_id);
+				let dominated = best.as_ref().map_or(true, |(_, best_range)| {
+					Self::range_smaller(&range, best_range)
+				});
+
+				if dominated {
+					best = Some((entity_id, range));
+				}
 			}
 		}
-		None
+
+		best.map(|(id, _)| id)
+	}
+
+	/// Returns true if `a` is strictly smaller than `b`
+	fn range_smaller(a: &Range, b: &Range) -> bool {
+		let a_lines = a.end.line - a.start.line;
+		let b_lines = b.end.line - b.start.line;
+
+		if a_lines != b_lines {
+			return a_lines < b_lines;
+		}
+
+		// Same number of lines - compare character span
+		let a_chars = if a_lines == 0 {
+			a.end.character - a.start.character
+		} else {
+			a.end.character // approximate for multi-line
+		};
+
+		let b_chars = if b_lines == 0 {
+			b.end.character - b.start.character
+		} else {
+			b.end.character
+		};
+
+		a_chars < b_chars
 	}
 
 	// Add helper function outside impl:
@@ -900,7 +935,7 @@ pub fn print_model_as_tree(model: &Model) -> String {
 	let mut out = String::new();
 
 	if let Some(root) = model.root {
-      let mut visited = std::collections::HashSet::new();
+		let mut visited = std::collections::HashSet::new();
 		print_node(&mut out, model, root, 0, &mut visited);
 	} else {
 		writeln!(out, "(no root set)").unwrap();
