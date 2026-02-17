@@ -55,67 +55,30 @@ pub fn project_template(template: &CfnTemplate) -> Result<Model, Vec<Diagnostic>
 	cfn_projector::ensure_aws_types(&mut model).map_err(model_error_to_diags)?;
 	cfn_projector::ensure_cfn_types(&mut model).map_err(model_error_to_diags)?;
 
-	let root = model.ensure_entity("deployment");
-	model
-		.apply_to(root, "wa2:type", "core:Deployment")
-		.map_err(model_error_to_diags)?;
-	model.set_root(root);
-
-	// Create template entity and link to deployment
+	// Create template entity as root
 	let template_entity = model.blank();
 	model
 		.apply_to(template_entity, "wa2:type", "cfn:Template")
 		.map_err(model_error_to_diags)?;
-	model
-		.apply_entity(root, "wa2:source", template_entity)
-		.map_err(model_error_to_diags)?;
+	model.set_root(template_entity);
 
-	cfn_projector::project_outputs(&mut model, template_entity, &template.outputs)
-		.map_err(model_error_to_diags)?;
+	// Project template sections
 	cfn_projector::project_parameters(&mut model, template_entity, &template.parameters)
 		.map_err(model_error_to_diags)?;
 	cfn_projector::project_pseudo_parameters(&mut model, template_entity)
 		.map_err(model_error_to_diags)?;
 
 	let entities =
-		cfn_projector::project_resources(&mut model, template_entity, root, &template.resources)
+		cfn_projector::project_resources(&mut model, template_entity, &template.resources)
 			.map_err(model_error_to_diags)?;
 
-	//let mut entities = Vec::new();
-	// for resource in template.resources.values() {
-	// 	let entity = model.ensure_entity(&resource.logical_id);
-	// 	model
-	// 		.apply_to(
-	// 			entity,
-	// 			"aws:type",
-	// 			&format!("\"{}\"", resource.resource_type),
-	// 		)
-	// 		.map_err(model_error_to_diags)?;
-	// 	model
-	// 		.apply_to(
-	// 			entity,
-	// 			"aws:logicalId",
-	// 			&format!("\"{}\"", resource.logical_id),
-	// 		)
-	// 		.map_err(model_error_to_diags)?;
-	// 	model
-	// 		.apply_entity(root, "wa2:contains", entity)
-	// 		.map_err(model_error_to_diags)?;
+   cfn_projector::project_outputs(&mut model, template_entity, &template.outputs)
+		.map_err(model_error_to_diags)?;
 
-	// 	// Track source location
-	// 	model.set_range(entity, resource.logical_id_range);
-
-	// 	for (prop_name, (prop_value, _)) in &resource.properties {
-	// 		cfn_projector::project_value(&mut model, entity, prop_name, prop_value)
-	// 			.map_err(model_error_to_diags)?;
-	// 	}
-
-	// 	entities.push(entity);
-	// }
-
-	// Derive phase - AWS-specific type classification and evidence
+	// Derive phase - creates core:Nodes attached to template
 	for entity in entities {
-		derivation::derive_wa2_type(&mut model, entity).map_err(model_error_to_diags)?;
+		derivation::derive_wa2_type(&mut model, entity, template_entity)
+			.map_err(model_error_to_diags)?;
 		derivation::derive_evidence(&mut model, entity).map_err(model_error_to_diags)?;
 	}
 

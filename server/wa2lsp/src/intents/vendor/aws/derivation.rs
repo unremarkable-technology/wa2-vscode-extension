@@ -3,7 +3,11 @@
 use crate::intents::model::{Axis, Cmp, EntityId, Model, ModelError, Query, Value};
 
 /// Derive core:Node from cfn:Resource with appropriate core type
-pub fn derive_wa2_type(model: &mut Model, cfn_entity: EntityId) -> Result<(), ModelError> {
+pub fn derive_wa2_type(
+	model: &mut Model,
+	cfn_entity: EntityId,
+	template: EntityId,
+) -> Result<(), ModelError> {
 	let Some(aws_type) = model.get_literal(cfn_entity, "aws:type") else {
 		return Ok(());
 	};
@@ -16,19 +20,16 @@ pub fn derive_wa2_type(model: &mut Model, cfn_entity: EntityId) -> Result<(), Mo
 	};
 
 	if let Some(kind) = core_kind {
-		// Create core:Node linked to the cfn:Resource
 		let node = model.blank();
 		model.apply_to(node, "wa2:type", kind)?;
 		model.apply_entity(node, "core:source", cfn_entity)?;
 
-		// Copy source range so goto-definition works from core layer
 		if let Some(range) = model.get_range(cfn_entity) {
 			model.set_range(node, range);
 		}
 
-		// Add node to deployment root
-		let root = model.resolve("deployment").expect("deployment must exist");
-		model.apply_entity(root, "wa2:contains", node)?;
+		// Add node to template
+		model.apply_entity(template, "wa2:contains", node)?;
 	}
 
 	Ok(())

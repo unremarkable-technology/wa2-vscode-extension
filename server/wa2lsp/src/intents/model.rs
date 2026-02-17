@@ -953,19 +953,27 @@ fn print_node(
 
 	let mut attrs = Vec::new();
 	let mut linked_entities = Vec::new();
+	let mut children = Vec::new();
 
+	// Collect all outgoing statements in order
 	for stmt_id in model.outgoing(node) {
 		let stmt = model.statement(stmt_id);
 		let pred_name = model.qualified_name(stmt.predicate);
-		if pred_name == "wa2:type" || pred_name == "wa2:contains" {
+
+		if pred_name == "wa2:type" {
 			continue;
 		}
+
 		match &stmt.object {
 			Value::Literal(lit) => {
 				attrs.push(format!("{}=\"{}\"", pred_name, lit));
 			}
 			Value::Entity(child_id) => {
-				linked_entities.push((pred_name, *child_id));
+				if pred_name == "wa2:contains" {
+					children.push(*child_id);
+				} else {
+					linked_entities.push((pred_name, *child_id));
+				}
 			}
 			Value::Number(n) => {
 				attrs.push(format!("{}={}", pred_name, n));
@@ -987,17 +995,43 @@ fn print_node(
 
 	writeln!(out, "{}{}{}{}", indent, name, type_str, attr_str).unwrap();
 
-	// First print wa2:contains children
-	for child in model.children(node) {
-		print_node(out, model, child, depth + 1, visited);
+	// Print linked entities first (predicates like cfn:resources, cfn:outputs)
+	for (pred_name, child_id) in linked_entities {
+		let child_entity = model.entity(child_id);
+		let is_blank = child_entity.localname.is_none();
+
+		if is_blank && !visited.contains(&child_id) {
+			// Blank node - expand inline under the predicate
+			writeln!(out, "{}  -{}-", indent, pred_name).unwrap();
+			print_node(out, model, child_id, depth + 2, visited);
+		} else {
+			// Named entity or already visited - show as reference
+			let child_name = model.qualified_name(child_id);
+			let child_types: Vec<String> = model
+				.types(child_id)
+				.iter()
+				.map(|&t| model.qualified_name(t))
+				.collect();
+			let child_type_str = if child_types.is_empty() {
+				String::new()
+			} else {
+				format!(" : {}", child_types.join(", "))
+			};
+			writeln!(
+				out,
+				"{}  -{}- {}{} (→)",
+				indent, pred_name, child_name, child_type_str
+			)
+			.unwrap();
+		}
 	}
 
-	// Then print entities linked via other predicates
-	for (pred_name, child_id) in linked_entities {
-		writeln!(out, "{}  -{}-", indent, pred_name).unwrap();
-		print_node(out, model, child_id, depth + 2, visited);
+	// Then print wa2:contains children (in statement order)
+	for child in children {
+		print_node(out, model, child, depth + 1, visited);
 	}
 }
+
 // ─── Tests ───
 
 #[cfg(test)]

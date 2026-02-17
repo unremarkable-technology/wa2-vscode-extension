@@ -52,21 +52,20 @@ const CFN_PREDICATES: &[&str] = &[
 
 /// Ensure core architectural types exist in the model
 pub fn ensure_core_types(model: &mut Model) -> Result<(), ModelError> {
-    model.ensure_entity("core");
+	model.ensure_entity("core");
 
-    // Types
-    model.apply("core:Node", "wa2:type", "wa2:Type")?;
-    model.apply("core:Store", "wa2:type", "wa2:Type")?;
-    model.apply("core:Run", "wa2:type", "wa2:Type")?;
-    model.apply("core:Move", "wa2:type", "wa2:Type")?;
-    model.apply("core:Evidence", "wa2:type", "wa2:Type")?;
-    model.apply("core:Deployment", "wa2:type", "wa2:Type")?;
+	// Types
+	model.apply("core:Node", "wa2:type", "wa2:Type")?;
+	model.apply("core:Store", "wa2:type", "wa2:Type")?;
+	model.apply("core:Run", "wa2:type", "wa2:Type")?;
+	model.apply("core:Move", "wa2:type", "wa2:Type")?;
+	model.apply("core:Evidence", "wa2:type", "wa2:Type")?;
 
-    // Predicates
-    model.apply("core:source", "wa2:type", "wa2:Predicate")?;
-    model.apply("core:value", "wa2:type", "wa2:Predicate")?;
+	// Predicates
+	model.apply("core:source", "wa2:type", "wa2:Predicate")?;
+	model.apply("core:value", "wa2:type", "wa2:Predicate")?;
 
-    Ok(())
+	Ok(())
 }
 
 /// Ensure CFN-specific types and predicates exist in the model
@@ -99,8 +98,6 @@ pub fn ensure_cfn_types(model: &mut Model) -> Result<(), ModelError> {
 	for name in CFN_PREDICATES {
 		model.apply(&format!("cfn:{}", name), "wa2:type", "wa2:Predicate")?;
 	}
-
-	model.apply("wa2:source", "wa2:type", "wa2:Predicate")?;
 
 	Ok(())
 }
@@ -661,7 +658,6 @@ pub fn project_outputs(
 pub fn project_resources(
 	model: &mut Model,
 	template_entity: EntityId,
-	root: EntityId,
 	resources: &IndexMap<String, CfnResource>,
 ) -> Result<Vec<EntityId>, ModelError> {
 	if resources.is_empty() {
@@ -687,16 +683,9 @@ pub fn project_resources(
 			&format!("\"{}\"", resource.logical_id),
 		)?;
 
-		// Add to cfn:resources container (template structure)
 		model.apply_entity(resources_container, "wa2:contains", entity)?;
-
-		// Also add to deployment root (for wa2 queries)
-		model.apply_entity(root, "wa2:contains", entity)?;
-
-		// Track source location
 		model.set_range(entity, resource.logical_id_range);
 
-		// Project properties
 		for (prop_name, (prop_value, _)) in &resource.properties {
 			project_value(model, entity, prop_name, prop_value)?;
 		}
