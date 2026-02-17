@@ -237,14 +237,7 @@ pub const TYPE_PRED: EntityId = EntityId(4); // wa2:type
 pub const NAMESPACE_PRED: EntityId = EntityId(5); // wa2:namespace
 pub const CARDINALITY: EntityId = EntityId(6); // wa2:cardinality
 pub const CONTAINS: EntityId = EntityId(7); // wa2:contains
-pub const STORE: EntityId = EntityId(8); // wa2:Store
-pub const RUN: EntityId = EntityId(9); // wa2:Run
-pub const MOVE: EntityId = EntityId(10); // wa2:Move
-pub const EVIDENCE: EntityId = EntityId(11); // wa2:Evidence
-pub const DEPLOYMENT: EntityId = EntityId(12); // wa2:Deployment
-pub const META: EntityId = EntityId(13); // wa2:Meta
-pub const VALUE: EntityId = EntityId(14); // wa2:value (predicate for evidence value)
-pub const BOOTSTRAP_COUNT: u32 = 15;
+pub const BOOTSTRAP_COUNT: u32 = 8;
 
 // ─── Model ───
 
@@ -293,7 +286,7 @@ impl Model {
 		let mut model = Self::empty();
 
 		// Create bootstrap entities directly (avoiding apply for circular refs)
-		// wa2 namespace
+		// wa2 namespace - only meta-types
 		model.add_entity_raw(Some("wa2"), None); // 0: wa2
 		model.add_entity_raw(Some("Type"), Some(NAMESPACE)); // 1: wa2:Type
 		model.add_entity_raw(Some("Namespace"), Some(NAMESPACE)); // 2: wa2:Namespace
@@ -302,13 +295,6 @@ impl Model {
 		model.add_entity_raw(Some("namespace"), Some(NAMESPACE)); // 5: wa2:namespace
 		model.add_entity_raw(Some("cardinality"), Some(NAMESPACE)); // 6: wa2:cardinality
 		model.add_entity_raw(Some("contains"), Some(NAMESPACE)); // 7: wa2:contains
-		model.add_entity_raw(Some("Store"), Some(NAMESPACE)); // 8: wa2:Store
-		model.add_entity_raw(Some("Run"), Some(NAMESPACE)); // 9: wa2:Run
-		model.add_entity_raw(Some("Move"), Some(NAMESPACE)); // 10: wa2:Move
-		model.add_entity_raw(Some("Evidence"), Some(NAMESPACE)); // 11: wa2:Evidence
-		model.add_entity_raw(Some("Deployment"), Some(NAMESPACE)); // 12: wa2:Deployment
-		model.add_entity_raw(Some("Meta"), Some(NAMESPACE)); // 13: wa2:Meta
-		model.add_entity_raw(Some("value"), Some(NAMESPACE)); // 14: wa2:value
 
 		// Type statements for bootstrap entities
 		model.add_statement_raw(NAMESPACE, TYPE_PRED, Value::Entity(NAMESPACE_TYPE));
@@ -319,13 +305,6 @@ impl Model {
 		model.add_statement_raw(NAMESPACE_PRED, TYPE_PRED, Value::Entity(PREDICATE));
 		model.add_statement_raw(CARDINALITY, TYPE_PRED, Value::Entity(PREDICATE));
 		model.add_statement_raw(CONTAINS, TYPE_PRED, Value::Entity(PREDICATE));
-		model.add_statement_raw(STORE, TYPE_PRED, Value::Entity(TYPE));
-		model.add_statement_raw(RUN, TYPE_PRED, Value::Entity(TYPE));
-		model.add_statement_raw(MOVE, TYPE_PRED, Value::Entity(TYPE));
-		model.add_statement_raw(EVIDENCE, TYPE_PRED, Value::Entity(TYPE));
-		model.add_statement_raw(DEPLOYMENT, TYPE_PRED, Value::Entity(TYPE));
-		model.add_statement_raw(META, TYPE_PRED, Value::Entity(TYPE));
-		model.add_statement_raw(VALUE, TYPE_PRED, Value::Entity(PREDICATE));
 
 		// Cardinality constraints
 		model.add_statement_raw(TYPE_PRED, CARDINALITY, Value::Number(1));
@@ -1069,17 +1048,24 @@ mod tests {
 	fn test_apply_statements() {
 		let mut model = Model::bootstrap();
 
+		// First ensure core types exist
+		model.apply("core:Store", "wa2:type", "wa2:Type").unwrap();
+		model.apply("core:Run", "wa2:type", "wa2:Type").unwrap();
+
 		// Create entity and add type
-		model.apply("bucket", "wa2:type", "wa2:Store").unwrap();
+		model.apply("bucket", "wa2:type", "core:Store").unwrap();
 
 		let bucket = model.resolve("bucket").expect("bucket should exist");
-		assert!(model.has_type(bucket, STORE));
+		let store_type = model
+			.resolve("core:Store")
+			.expect("core:Store should exist");
+		assert!(model.has_type(bucket, store_type));
 
 		// Idempotent - same statement again
-		model.apply("bucket", "wa2:type", "wa2:Store").unwrap();
+		model.apply("bucket", "wa2:type", "core:Store").unwrap();
 
 		// Conflict - different type (cardinality 1)
-		let result = model.apply("bucket", "wa2:type", "wa2:Run");
+		let result = model.apply("bucket", "wa2:type", "core:Run");
 		assert!(matches!(result, Err(ModelError::Conflict { .. })));
 	}
 
@@ -1128,27 +1114,34 @@ mod tests {
 	fn test_query_descendants() {
 		let mut model = Model::bootstrap();
 
+		// Ensure core types exist
+		model
+			.apply("core:Deployment", "wa2:type", "wa2:Type")
+			.unwrap();
+		model.apply("core:Store", "wa2:type", "wa2:Type").unwrap();
+		model.apply("core:Run", "wa2:type", "wa2:Type").unwrap();
+
 		// Create root
 		let root = model.ensure_entity("root");
-		model.apply_to(root, "wa2:type", "wa2:Deployment").unwrap();
+		model.apply_to(root, "wa2:type", "core:Deployment").unwrap();
 		model.set_root(root);
 
 		// Create stores
 		let bucket1 = model.ensure_entity("bucket1");
-		model.apply_to(bucket1, "wa2:type", "wa2:Store").unwrap();
+		model.apply_to(bucket1, "wa2:type", "core:Store").unwrap();
 		model.apply_entity(root, "wa2:contains", bucket1).unwrap();
 
 		let bucket2 = model.ensure_entity("bucket2");
-		model.apply_to(bucket2, "wa2:type", "wa2:Store").unwrap();
+		model.apply_to(bucket2, "wa2:type", "core:Store").unwrap();
 		model.apply_entity(root, "wa2:contains", bucket2).unwrap();
 
 		// Create a non-store
 		let lambda = model.ensure_entity("lambda");
-		model.apply_to(lambda, "wa2:type", "wa2:Run").unwrap();
+		model.apply_to(lambda, "wa2:type", "core:Run").unwrap();
 		model.apply_entity(root, "wa2:contains", lambda).unwrap();
 
 		// Query all stores
-		let stores = model.query(&Query::descendant("wa2:Store"));
+		let stores = model.query(&Query::descendant("core:Store"));
 		assert_eq!(stores.len(), 2);
 		assert!(stores.contains(&bucket1));
 		assert!(stores.contains(&bucket2));
@@ -1221,17 +1214,19 @@ mod tests {
 	fn test_multiple_types() {
 		let mut model = Model::bootstrap();
 
-		// wa2:type has cardinality 1, so we need a new predicate
-		// Actually for our use case, things can have multiple types via different predicates
-		// Let's create a vendor type predicate that doesn't have cardinality constraint
+		// Ensure core:Store exists
+		model.apply("core:Store", "wa2:type", "wa2:Type").unwrap();
 
 		let bucket = model.ensure_entity("bucket");
-		model.apply_to(bucket, "wa2:type", "wa2:Store").unwrap();
+		model.apply_to(bucket, "wa2:type", "core:Store").unwrap();
 		model
 			.apply_to(bucket, "aws:vendorType", "\"AWS::S3::Bucket\"")
 			.unwrap();
 
-		assert!(model.has_type(bucket, STORE));
+		let store_type = model
+			.resolve("core:Store")
+			.expect("core:Store should exist");
+		assert!(model.has_type(bucket, store_type));
 
 		let vendor_type = model
 			.get_literal(bucket, "aws:vendorType")

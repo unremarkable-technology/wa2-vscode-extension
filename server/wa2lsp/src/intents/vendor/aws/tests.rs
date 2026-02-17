@@ -1,14 +1,22 @@
-
 #[cfg(test)]
 mod tests {
 	// ─── Tests ───
-	use std::{env, path::Path, sync::{Arc, OnceLock}};
+	use std::{
+		env,
+		path::Path,
+		sync::{Arc, OnceLock},
+	};
 
 	use url::Url;
 
-	use crate::{intents::{guidance::{FocusTaxonomy, guidance, has_evidence}, model::{Query, print_model_as_tree}, vendor::{DocumentFormat, Method, Vendor, get_projector}}, spec::{
-		spec_cache::SpecCacheManager, spec_source::SpecSource, spec_store::SpecStore,
-	}};
+	use crate::{
+		intents::{
+			guidance::{FocusTaxonomy, guidance, has_evidence},
+			model::{Query, print_model_as_tree},
+			vendor::{DocumentFormat, Method, Vendor, get_projector},
+		},
+		spec::{spec_cache::SpecCacheManager, spec_source::SpecSource, spec_store::SpecStore},
+	};
 
 	/// Loads the real CFN spec (blocking). Cached after first call.
 	/// Panics if spec can't be loaded.
@@ -138,7 +146,7 @@ Resources:
 
 		// Lambda is Run, Queue is Move - neither are Store
 		// Only Store requires DataSensitivity/DataCriticality tags
-		let stores = model.query(&Query::descendant("wa2:Store"));
+		let stores = model.query(&Query::descendant("core:Store"));
 		assert!(stores.is_empty());
 		assert!(guides.is_empty());
 	}
@@ -174,10 +182,10 @@ Resources:
 		let guides = guidance(&model);
 		eprintln!("Guidance:\n===\n{:?}", guides);
 
-		let stores = model.query(&Query::descendant("wa2:Store"));
+		let stores = model.query(&Query::descendant("core:Store"));
 		assert_eq!(stores.len(), 2);
 
-		let runs = model.query(&Query::descendant("wa2:Run"));
+		let runs = model.query(&Query::descendant("core:Run"));
 		assert_eq!(runs.len(), 1);
 	}
 
@@ -213,16 +221,33 @@ Resources:
 			.ok()
 			.unwrap()
 			.model;
-		//eprintln!("\nModel:\n===\n{}", &model);
+
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
 
 		// GUIDANCE: is guidance required?
 		let guides = guidance(&model);
 		eprintln!("Guidance:\n===\n{:?}", guides);
 
-		let bucket = model.resolve("Bucket1").expect("bucket should exist");
-		assert!(has_evidence(&model, bucket, "DataResiliance"));
-		assert!(!has_evidence(&model, bucket, "SomethingElse"));
+		// Find the core:Store node that sources from Bucket1
+		let bucket_cfn = model.resolve("Bucket1").expect("bucket should exist");
+		let core_source = model
+			.resolve("core:source")
+			.expect("core:source should exist");
+
+		// Find core:Node with core:source -> Bucket1
+		let stores = model.query(&Query::descendant("core:Store"));
+		let store_node = stores
+			.iter()
+			.find(|&&node| {
+				model
+					.get_all(node, core_source)
+					.iter()
+					.any(|v| v.as_entity() == Some(bucket_cfn))
+			})
+			.expect("should find core:Store for Bucket1");
+
+		assert!(has_evidence(&model, *store_node, "DataResiliance"));
+		assert!(!has_evidence(&model, *store_node, "SomethingElse"));
 	}
 
 	#[test]
@@ -251,7 +276,7 @@ Resources:
 		let display = format!("{}", model);
 
 		assert!(display.contains("TestBucket"));
-		assert!(display.contains("wa2:Store"));
+		assert!(display.contains("core:Store"));
 	}
 
 	#[test]

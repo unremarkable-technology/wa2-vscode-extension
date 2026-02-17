@@ -51,12 +51,13 @@ impl VendorProjector for AwsCfnProjector {
 /// Project a parsed CFN template into a Model
 pub fn project_template(template: &CfnTemplate) -> Result<Model, Vec<Diagnostic>> {
 	let mut model = Model::bootstrap();
+	cfn_projector::ensure_core_types(&mut model).map_err(model_error_to_diags)?;
 	cfn_projector::ensure_aws_types(&mut model).map_err(model_error_to_diags)?;
 	cfn_projector::ensure_cfn_types(&mut model).map_err(model_error_to_diags)?;
 
 	let root = model.ensure_entity("deployment");
 	model
-		.apply_to(root, "wa2:type", "wa2:Deployment")
+		.apply_to(root, "wa2:type", "core:Deployment")
 		.map_err(model_error_to_diags)?;
 	model.set_root(root);
 
@@ -76,9 +77,10 @@ pub fn project_template(template: &CfnTemplate) -> Result<Model, Vec<Diagnostic>
 	cfn_projector::project_pseudo_parameters(&mut model, template_entity)
 		.map_err(model_error_to_diags)?;
 
-   let entities = cfn_projector::project_resources(&mut model, template_entity, root, &template.resources)
-		.map_err(model_error_to_diags)?;
-   
+	let entities =
+		cfn_projector::project_resources(&mut model, template_entity, root, &template.resources)
+			.map_err(model_error_to_diags)?;
+
 	//let mut entities = Vec::new();
 	// for resource in template.resources.values() {
 	// 	let entity = model.ensure_entity(&resource.logical_id);

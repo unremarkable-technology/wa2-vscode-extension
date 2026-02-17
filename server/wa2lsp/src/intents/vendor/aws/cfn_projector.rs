@@ -50,6 +50,25 @@ const CFN_PREDICATES: &[&str] = &[
 	"conditionName",
 ];
 
+/// Ensure core architectural types exist in the model
+pub fn ensure_core_types(model: &mut Model) -> Result<(), ModelError> {
+    model.ensure_entity("core");
+
+    // Types
+    model.apply("core:Node", "wa2:type", "wa2:Type")?;
+    model.apply("core:Store", "wa2:type", "wa2:Type")?;
+    model.apply("core:Run", "wa2:type", "wa2:Type")?;
+    model.apply("core:Move", "wa2:type", "wa2:Type")?;
+    model.apply("core:Evidence", "wa2:type", "wa2:Type")?;
+    model.apply("core:Deployment", "wa2:type", "wa2:Type")?;
+
+    // Predicates
+    model.apply("core:source", "wa2:type", "wa2:Predicate")?;
+    model.apply("core:value", "wa2:type", "wa2:Predicate")?;
+
+    Ok(())
+}
+
 /// Ensure CFN-specific types and predicates exist in the model
 pub fn ensure_aws_types(model: &mut Model) -> Result<(), ModelError> {
 	model.ensure_entity("aws");
