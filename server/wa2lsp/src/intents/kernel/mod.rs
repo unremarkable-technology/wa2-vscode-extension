@@ -7,11 +7,10 @@ mod parser;
 mod query;
 mod rules;
 
-use std::path::Path;
-
 use tower_lsp::lsp_types::Diagnostic;
 use url::Url;
 
+use crate::intents::kernel::ast::Rule;
 use crate::intents::model::Model;
 use crate::intents::vendor::{DocumentFormat, Method, Vendor, get_projector};
 
@@ -35,6 +34,8 @@ pub struct AssertFailure {
 /// Kernel - the WA2 analysis engine
 pub struct Kernel {
 	bootstrap_source: String,
+	model: Model,
+	rules: Vec<Rule>,
 }
 
 impl Default for Kernel {
@@ -45,15 +46,37 @@ impl Default for Kernel {
 
 impl Kernel {
 	pub fn new() -> Self {
+		Kernel::bootstrap()
+	}
+
+	fn bootstrap() -> Self {
 		// Load bootstrap.wa2 from embedded or file
 		let bootstrap_source =
 			include_str!("../../../../../wa2/core/v0.1/bootstrap.wa2").to_string();
-		Self { bootstrap_source }
-	}
 
-	pub fn from_bootstrap_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
-		let bootstrap_source = std::fs::read_to_string(path)?;
-		Ok(Self { bootstrap_source })
+		// 1. Bootstrap model with minimal Rust primitives
+		let mut model = Model::bootstrap();
+
+		// 2. Parse bootstrap.wa2
+		let source = Wa2Source::from_str(&bootstrap_source);
+		let ast = parser::parse(source.lexer())
+			.map_err(|e| vec![Kernel::parse_error_to_diagnostic(&e)])
+			.unwrap();
+
+		// 3. Lower AST to model (types, predicates, instances)
+		let mut lowerer = Lower::new(&mut model, "core")
+			.map_err(|e| vec![Kernel::lower_error_to_diagnostic(&e)])
+			.unwrap();
+		let rules = lowerer
+			.lower(&ast)
+			.map_err(|e| vec![Kernel::lower_error_to_diagnostic(&e)])
+			.unwrap();
+
+		Self {
+			bootstrap_source,
+			model,
+			rules,
+		}
 	}
 
 	/// Analyze a document, returning model and failures
@@ -65,20 +88,9 @@ impl Kernel {
 		vendor: Vendor,
 		method: Method,
 	) -> Result<AnalysisResult, Vec<Diagnostic>> {
-		// 1. Bootstrap model with minimal Rust primitives
-		let mut model = Model::bootstrap();
-
-		// 2. Parse bootstrap.wa2
-		let source = Wa2Source::from_str(&self.bootstrap_source);
-		let ast =
-			parser::parse(source.lexer()).map_err(|e| vec![self.parse_error_to_diagnostic(&e)])?;
-
-		// 3. Lower AST to model (types, predicates, instances)
-		let mut lowerer =
-			Lower::new(&mut model, "core").map_err(|e| vec![self.lower_error_to_diagnostic(&e)])?;
-		let rules = lowerer
-			.lower(&ast)
-			.map_err(|e| vec![self.lower_error_to_diagnostic(&e)])?;
+		// keeps original model, rules clean
+		let mut model = self.model.clone();
+		let rules = self.rules.clone();
 
 		// 4. Project vendor IaC into the same model
 		let projector = get_projector(vendor, method);
@@ -88,7 +100,7 @@ impl Kernel {
 		let mut engine = RuleEngine::new();
 		engine
 			.run(&mut model, &rules)
-			.map_err(|e| vec![self.rule_error_to_diagnostic(&e)])?;
+			.map_err(|e| vec![Kernel::rule_error_to_diagnostic(&e)])?;
 
 		// 6. Query for assertion failures
 		let failures = self.collect_failures(&model);
@@ -114,7 +126,7 @@ impl Kernel {
 		failures
 	}
 
-	fn parse_error_to_diagnostic(&self, err: &parser::ParseError) -> Diagnostic {
+	fn parse_error_to_diagnostic(err: &parser::ParseError) -> Diagnostic {
 		Diagnostic {
 			range: tower_lsp::lsp_types::Range::default(),
 			severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
@@ -123,7 +135,7 @@ impl Kernel {
 		}
 	}
 
-	fn lower_error_to_diagnostic(&self, err: &lower::LowerError) -> Diagnostic {
+	fn lower_error_to_diagnostic(err: &lower::LowerError) -> Diagnostic {
 		Diagnostic {
 			range: tower_lsp::lsp_types::Range::default(),
 			severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
@@ -132,7 +144,7 @@ impl Kernel {
 		}
 	}
 
-	fn rule_error_to_diagnostic(&self, err: &rules::RuleError) -> Diagnostic {
+	fn rule_error_to_diagnostic(err: &rules::RuleError) -> Diagnostic {
 		Diagnostic {
 			range: tower_lsp::lsp_types::Range::default(),
 			severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
@@ -144,22 +156,15 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::intents::kernel::lexer::Wa2Source;
-	use crate::intents::kernel::lower::Lower;
-	use crate::intents::kernel::parser::parse;
-	use crate::intents::model::Model;
+	use crate::intents::kernel::{Kernel, rules::RuleEngine};
 
 	#[test]
 	fn test_derive_stores_rule() {
 		// 1. Bootstrap and load DSL
-		let bootstrap_src = include_str!("../../../../../wa2/core/v0.1/bootstrap.wa2");
-		let source = Wa2Source::from_str(bootstrap_src);
-		let ast = parse(source.lexer()).expect("parse bootstrap.wa2");
-
-		let mut model = Model::bootstrap();
-		let mut lower = Lower::new(&mut model, "core").expect("create lowerer");
-		let rules = lower.lower(&ast).expect("lower bootstrap.wa2");
+		let kernel = Kernel::new();
+		// keeps original model, rules clean
+		let mut model = kernel.model.clone();
+		let rules = kernel.rules.clone();
 
 		eprintln!("Loaded {} rules", rules.len());
 		for rule in &rules {
@@ -167,12 +172,6 @@ mod tests {
 		}
 
 		// 2. Manually create CFN structure (simulating projector without derive phase)
-		model.ensure_namespace("cfn").unwrap();
-		model.ensure_namespace("aws").unwrap();
-
-		model.apply("cfn:Resource", "wa2:type", "wa2:Type").unwrap();
-		model.apply("cfn:Template", "wa2:type", "wa2:Type").unwrap();
-
 		let workload = model.ensure_entity("core:workload").unwrap();
 		model
 			.apply_to(workload, "wa2:type", "core:Workload")
@@ -227,6 +226,128 @@ mod tests {
 		let children = model.children(workload);
 		let store_in_children = children.iter().any(|&c| model.has_type(c, store_type));
 		assert!(store_in_children, "Store should be child of workload");
+	}
+
+	#[test]
+	fn test_derive_replication_evidence() {
+		let kernel = Kernel::new();
+		let mut model = kernel.model.clone();
+		let rules = kernel.rules.clone();
+
+		// Create workload and template structure
+		let workload = model.ensure_entity("core:workload").unwrap();
+		model
+			.apply_to(workload, "wa2:type", "core:Workload")
+			.unwrap();
+		model.set_root(workload);
+
+		let template = model.blank();
+		model
+			.apply_to(template, "wa2:type", "cfn:Template")
+			.unwrap();
+		model
+			.apply_entity(workload, "core:source", template)
+			.unwrap();
+
+		let resources = model.blank();
+		model
+			.apply_entity(template, "cfn:resources", resources)
+			.unwrap();
+
+		// SourceBucket with replication configuration
+		let source_bucket = model.ensure_raw("SourceBucket");
+		model
+			.apply_to(source_bucket, "wa2:type", "cfn:Resource")
+			.unwrap();
+		model
+			.apply_to(source_bucket, "aws:type", "\"AWS::S3::Bucket\"")
+			.unwrap();
+		model
+			.apply_entity(resources, "wa2:contains", source_bucket)
+			.unwrap();
+
+		// VersioningConfiguration.Status = Enabled
+		let versioning = model.blank();
+		model
+			.apply_entity(source_bucket, "aws:VersioningConfiguration", versioning)
+			.unwrap();
+		model
+			.apply_to(versioning, "aws:Status", "\"Enabled\"")
+			.unwrap();
+
+		// ReplicationConfiguration
+		let replication = model.blank();
+		model
+			.apply_entity(source_bucket, "aws:ReplicationConfiguration", replication)
+			.unwrap();
+
+		// ReplicationConfiguration.Role (via GetAtt, but we just need it to exist)
+		let role_ref = model.blank();
+		model.apply_to(role_ref, "wa2:type", "cfn:GetAtt").unwrap();
+		model
+			.apply_entity(replication, "aws:Role", role_ref)
+			.unwrap();
+
+		// ReplicationConfiguration.Rules[]
+		let rules_container = model.blank();
+		model
+			.apply_entity(replication, "aws:Rules", rules_container)
+			.unwrap();
+
+		let rule1 = model.blank();
+		model
+			.apply_entity(rules_container, "wa2:contains", rule1)
+			.unwrap();
+		model.apply_to(rule1, "aws:Id", "\"ReplicateAll\"").unwrap();
+		model.apply_to(rule1, "aws:Status", "\"Enabled\"").unwrap();
+		model.apply_to(rule1, "aws:Priority", "\"1\"").unwrap();
+
+		// Run derive_stores first to create core:Store
+		let mut engine = RuleEngine::new();
+		engine.run(&mut model, &rules).expect("run rules");
+
+		eprintln!("After rules:\n{}", model);
+
+		// Verify core:Store was created for SourceBucket
+		let store_type = model
+			.resolve("core:Store")
+			.expect("core:Store should exist");
+		let stores: Vec<_> = (0..model.entity_count())
+			.map(|i| crate::intents::model::EntityId(i as u32))
+			.filter(|&id| model.has_type(id, store_type))
+			.collect();
+
+		assert_eq!(
+			stores.len(),
+			1,
+			"Should have one Store node for SourceBucket"
+		);
+		let store = stores[0];
+
+		// Verify Evidence was attached
+		let evidence_type = model
+			.resolve("core:Evidence")
+			.expect("core:Evidence should exist");
+		let store_children = model.children(store);
+		let evidence_nodes: Vec<_> = store_children
+			.iter()
+			.filter(|&&c| model.has_type(c, evidence_type))
+			.collect();
+
+		eprintln!(
+			"Found {} Evidence nodes attached to Store",
+			evidence_nodes.len()
+		);
+		assert_eq!(evidence_nodes.len(), 1, "Should have one Evidence node");
+
+		// Verify evidence value
+		let evidence = evidence_nodes[0];
+		let value = model.get_literal(*evidence, "core:value");
+		assert_eq!(
+			value,
+			Some("DataResilience".to_string()),
+			"Evidence should be DataResilience"
+		);
       panic!();
 	}
 }

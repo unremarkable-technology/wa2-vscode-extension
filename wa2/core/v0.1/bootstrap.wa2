@@ -1,109 +1,217 @@
 // bootstrap.wa2 - WA2 type system bootstrap
 
 namespace _internal {
-    // Native type mapping
-    struct Native {
-        rust: String
-        parser: String
-    }
+	// Native type mapping
+	struct Native {
+		rust: String
+		parser: String
+	}
 }
 
 namespace core {
-    // Architectural node types
-    enum Node { Store, Run, Move }
+	// Architectural node types
+	enum Node { Store, Run, Move }
 
-    struct Workload {
-        nodes: Node[]
-    }
+	struct Workload {
+		nodes: Node[]
+	}
 
-    struct Evidence {
-        value: String
-    }
+	struct Evidence {
+		value: String
+	}
 
-    struct AssertFailure {
-        assertion: String
-    }
+	struct AssertFailure {
+		assertion: String
+	}
 
-    // Predicates
-    predicate source
-    predicate value
-}
-
-namespace cfn {
-    type Template
-    type Resource
-    type Parameter
-    type PseudoParameter
-    type Output
-    type Ref
-    type GetAtt
-    type Sub
-    type SubVarRef
-
-    predicate target
-    predicate attribute
-    predicate resources
-    predicate parameters
-    predicate outputs
+	// Predicates
+	predicate source
+	predicate value
 }
 
 namespace aws {
-    predicate type
-    predicate logicalId
+	predicate type
+	predicate logicalId
+
+	namespace cfn {
+		type Template
+		type Resource
+		type Parameter
+		type PseudoParameter
+		type Output
+		type Ref
+		type GetAtt
+		type Sub
+		type SubVarRef
+
+		predicate target
+		predicate attribute
+		predicate resources
+		predicate parameters
+		predicate outputs
+
+		rule derive_stores {
+			let cfn_stores = ?(//cfn:Resource[aws:type in (
+				"AWS::S3::Bucket",
+				"AWS::EC2::Volume",
+				"AWS::EFS::FileSystem"
+			)])
+
+			*(s in cfn_stores, {
+				let node = +(_, wa2:type, core:Store)
+				+(node, core:source, s)
+				+(core:workload, wa2:contains, node)
+			})
+		}
+
+		rule derive_runs {
+			let cfn_runs = ?(//cfn:Resource[aws:type in (
+				"AWS::EC2::Instance",
+				"AWS::Lambda::Function"
+			)])
+
+			*(r in cfn_runs, {
+				let node = +(_, wa2:type, core:Run)
+				+(node, core:source, r)
+				+(core:workload, wa2:contains, node)
+			})
+		}
+
+		rule derive_moves {
+			let cfn_moves = ?(//cfn:Resource[aws:type in (
+				"AWS::SQS::Queue",
+				"AWS::Kinesis::Stream"
+			)])
+
+			*(m in cfn_moves, {
+				let node = +(_, wa2:type, core:Move)
+				+(node, core:source, m)
+				+(core:workload, wa2:contains, node)
+			})
+		}
+	}
 }
 
 // Singleton instance
 instance core:workload: core:Workload
 
-// Derivation rules
-rule derive_stores {
-    let cfn_stores = ?(//cfn:Resource[aws:type in (
-        "AWS::S3::Bucket",
-        "AWS::EC2::Volume",
-        "AWS::EFS::FileSystem"
-    )])
+// ═══════════════════════════════════════════════════════════════════
+// FRAMEWORK: Data protection types
+// ═══════════════════════════════════════════════════════════════════
 
-    *(s in cfn_stores, {
-        let node = +(_, wa2:type, core:Store)
-        +(node, core:source, s)
-        +(core:workload, wa2:contains, node)
-    })
+namespace data {
+	struct Criticality {
+		value: Bool
+	}
+	struct Resilience {
+		value: Bool
+	}
 }
 
-rule derive_runs {
-    let cfn_runs = ?(//cfn:Resource[aws:type in (
-        "AWS::EC2::Instance",
-        "AWS::Lambda::Function"
-    )])
+// ═══════════════════════════════════════════════════════════════════
+// FRAMEWORK: Policies
+// ═══════════════════════════════════════════════════════════════════
 
-    *(r in cfn_runs, {
-        let node = +(_, wa2:type, core:Run)
-        +(node, core:source, r)
-        +(core:workload, wa2:contains, node)
-    })
+// Governance → Policy → Control → Evidence
+//
+// - governance: enterprise configuration, loaded externally
+// - policy: groups related controls with modals
+// - rule: evaluates and creates evidence
+// - evidence: facts attached to nodes
+
+policy protect_critical_data {
+	must ensure_stores_have_data_criticality
+	must ensure_critical_stores_are_protected
 }
 
-rule derive_moves {
-    let cfn_moves = ?(//cfn:Resource[aws:type in (
-        "AWS::SQS::Queue",
-        "AWS::Kinesis::Stream"
-    )])
+rule ensure_stores_have_data_criticality {
+	let scope = ?(//core:Store)
 
-    *(m in cfn_moves, {
-        let node = +(_, wa2:type, core:Move)
-        +(node, core:source, m)
-        +(core:workload, wa2:contains, node)
-    })
+	// for all in scope, do we satisfy
+	*(store in scope, {
+		must ?(store/core:Evidence/data:Criticality)
+	})
 }
 
-rule derive_replication_evidence {
-    let replicated = ?(//core:Store[
-        core:source/aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
-    ])
+rule ensure_critical_stores_are_protected {
+	// what do i look against
+	let scope = ?(//core:Store[
+		core:Evidence/data:Criticality = true
+	])
 
-    *(store in replicated, {
-        let evidence = +(_, wa2:type, core:Evidence)
-        +(evidence, core:value, "DataResilience")
-        +(store, wa2:contains, evidence)
-    })
+	// for all in scope, do we satisfy
+	*(store in scope, {
+		must ?(store/core:Evidence/data:Resilience = true)
+	})
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// USER CODE
+// ═══════════════════════════════════════════════════════════════════
+
+// design observation: rules add evidence to the graph,
+// which triggers other rules to derive further facts.
+// this decouples framework policies from vendor specifics -
+// the framework can require data protection for critical stores
+// without understanding tagging, CFN, AWS Services, or S3 replication.
+
+enum DataCriticalityTagging {
+	MissionCritical,   // existential / legal / safety impact
+	BusinessCritical,  // major financial or operational impact
+	Important,         // painful but survivable
+	NonCritical,       // inconvenience only
+	Disposable         // safe to lose
+}
+
+rule evaluate_aws_cfn_stores {
+	let cfn_resources = ?(//cfn:Resource)
+
+	*(cfn_resource in cfn_resources, {
+		let dc_tag = ?(cfn_resource/aws:Tags[aws:Key = 'DataCriticality']/aws:Value)
+		
+		// ~() converts in a mode (strict or lazy) from a value into destination type
+		// in this case "strict" means it we cause a assert failure if any problems
+		let is_critical = ~(strict, dc_tag, DataCriticalityTagging {
+			MissionCritical, BusinessCritical => true,
+			_ => false,
+		})
+
+		let store = ?(cfn_resource/core:Store)
+		let evidence = +(_, wa2:type, core:Evidence)
+		+(store, wa2:contains, evidence)
+
+		let fact = +(_, wa2:type, data:Criticality)
+		+(evidence, wa2:contains, fact)
+		+(fact, data:value, is_critical)
+	})
+}
+
+rule evaluate_aws_s3_resilience {
+	let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
+		aws:VersioningConfiguration/aws:Status = "Enabled"
+	][
+		aws:ReplicationConfiguration/aws:Role
+	][
+		aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
+	]/core:Store)
+
+	*(store in replicated_stores, {
+		let evidence = +(_, wa2:type, core:Evidence)
+		+(store, wa2:contains, evidence)
+
+		let fact = +(_, wa2:type, data:Resilience)
+		+(evidence, wa2:contains, fact)
+		+(fact, data:value, true)
+	})
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GOVERNANCE (loaded by enterprise, not developers)
+// ═══════════════════════════════════════════════════════════════════
+
+//governance production {
+//	setting gdpr:minimum_age = 16
+//	
+//	must protect_critical_data
+//	should cost_optimization
+//}
