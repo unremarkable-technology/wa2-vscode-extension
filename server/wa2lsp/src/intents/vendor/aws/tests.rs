@@ -241,8 +241,8 @@ Resources:
 			})
 			.expect("should find core:Store for Bucket1");
 
-		assert!(has_evidence(&model, *store_node, "DataResilience"));
-		assert!(!has_evidence(&model, *store_node, "SomethingElse"));
+		assert!(has_evidence(&model, *store_node, "data:Resilience"));
+		assert!(!has_evidence(&model, *store_node, "data:SomethingElse"));
 	}
 
 	#[test]

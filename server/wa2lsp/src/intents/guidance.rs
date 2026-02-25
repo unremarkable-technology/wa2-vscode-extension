@@ -54,14 +54,29 @@ fn get_tag_value(model: &Model, resource: EntityId, tag_key: &str) -> Option<Str
 }
 
 /// Check if a core:Node has evidence of a given type
-pub fn has_evidence(model: &Model, node: EntityId, evidence_name: &str) -> bool {
-	let query = Query::descendant("core:Evidence").filter(
-		"core:value",
-		Cmp::Eq,
-		Value::Literal(evidence_name.to_string()),
-	);
+pub fn has_evidence(model: &Model, store: EntityId, fact_type_name: &str) -> bool {
+	let evidence_type = match model.resolve("core:Evidence") {
+		Some(t) => t,
+		None => return false,
+	};
 
-	!model.query_from(&[node], &query).is_empty()
+	let fact_type = match model.resolve(fact_type_name) {
+		Some(t) => t,
+		None => return false,
+	};
+
+	// Check if store has Evidence child containing the fact type
+	for evidence_id in model.children(store) {
+		if model.has_type(evidence_id, evidence_type) {
+			for fact_id in model.children(evidence_id) {
+				if model.has_type(fact_id, fact_type) {
+					return true;
+				}
+			}
+		}
+	}
+
+	false
 }
 
 // ─── Guidance ───
@@ -119,7 +134,7 @@ pub fn guidance(model: &Model) -> Vec<Guide> {
 		// Check critical data is backed up (evidence on the core:Node)
 		if let Some(criticality) = get_tag_value(model, cfn_resource, "DataCriticality") {
 			if (criticality == "MissionCritical" || criticality == "BusinessCritical")
-				&& !has_evidence(model, node, "DataResilience")
+				&& !has_evidence(model, node, "data:Resilience")
 			{
 				guides.push(Guide {
 					entity: cfn_resource,

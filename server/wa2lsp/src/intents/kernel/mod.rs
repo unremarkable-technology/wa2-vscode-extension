@@ -306,7 +306,7 @@ mod tests {
 		let mut engine = RuleEngine::new();
 		engine.run(&mut model, &rules).expect("run rules");
 
-		//eprintln!("After rules:\n{}", model);
+		eprintln!("After rules:\n{}", model);
 
 		// Verify core:Store was created for SourceBucket
 		let store_type = model
@@ -340,14 +340,27 @@ mod tests {
 		);
 		assert_eq!(evidence_nodes.len(), 1, "Should have one Evidence node");
 
-		// Verify evidence value
-		let evidence = evidence_nodes[0];
-		let value = model.get_literal(*evidence, "core:value");
+		// Verify evidence contains a data:Resilience fact with value true
+		let evidence = *evidence_nodes[0];
+		let resilience_type = model
+			.resolve("data:Resilience")
+			.expect("data:Resilience should exist");
+
+		let evidence_children = model.children(evidence);
+		let fact_nodes: Vec<_> = evidence_children
+			.iter()
+			.filter(|&&c| model.has_type(c, resilience_type))
+			.collect();
+
+		assert_eq!(fact_nodes.len(), 1, "Should have one Resilience fact");
+
+		let fact = *fact_nodes[0];
+		let value = model.get_literal(fact, "data:value");
 		assert_eq!(
 			value,
-			Some("DataResilience".to_string()),
-			"Evidence should be DataResilience"
+			Some("true".to_string()),
+			"Resilience fact should have value true"
 		);
-      //panic!();
+		//panic!();
 	}
 }

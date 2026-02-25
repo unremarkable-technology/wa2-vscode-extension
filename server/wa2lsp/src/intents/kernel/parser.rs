@@ -470,15 +470,22 @@ fn parse_expr(p: &mut Parser) -> Result<Expr, ParseError> {
 			Ok(Expr::Blank(span))
 		}
 		Some(Token::Question) => parse_query_expr(p),
-		Some(Token::Plus) => {
-			// +(s, p, o) as expression returns the subject
-			parse_add_expr(p)
-		}
+		Some(Token::Plus) => parse_add_expr(p),
 		Some(Token::StringLiteral(s)) => {
 			let s = s.clone();
 			let span = p.span.clone();
 			p.advance();
 			Ok(Expr::String(s, span))
+		}
+		Some(Token::KwTrue) => {
+			let span = p.span.clone();
+			p.advance();
+			Ok(Expr::Bool(true, span))
+		}
+		Some(Token::KwFalse) => {
+			let span = p.span.clone();
+			p.advance();
+			Ok(Expr::Bool(false, span))
 		}
 		Some(Token::Ident(name)) if name == "empty" => {
 			let start = p.span.start;
@@ -490,7 +497,6 @@ fn parse_expr(p: &mut Parser) -> Result<Expr, ParseError> {
 		}
 		Some(Token::Ident(_)) => {
 			let qname = parse_qualified_name(p)?;
-			// Check if it's actually a variable (no colon seen)
 			if qname.namespace.is_none() {
 				Ok(Expr::Var(qname.name, qname.span))
 			} else {
@@ -706,11 +712,11 @@ fn parse_literal(p: &mut Parser) -> Result<Literal, ParseError> {
 			p.advance();
 			Ok(Literal::Number(n))
 		}
-		Some(Token::Ident(s)) if s == "true" => {
+		Some(Token::KwTrue) => {
 			p.advance();
 			Ok(Literal::Bool(true))
 		}
-		Some(Token::Ident(s)) if s == "false" => {
+		Some(Token::KwFalse) => {
 			p.advance();
 			Ok(Literal::Bool(false))
 		}

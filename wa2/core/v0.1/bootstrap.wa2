@@ -186,39 +186,25 @@ namespace data {
 //	})
 //}
 //
-//rule evaluate_aws_s3_resilience {
-//	let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
-//		aws:VersioningConfiguration/aws:Status = "Enabled"
-//	][
-//		aws:ReplicationConfiguration/aws:Role
-//	][
-//		aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
-//	]/core:Store)
-//
-//	*(store in replicated_stores, {
-//		let evidence = +(_, wa2:type, core:Evidence)
-//		+(store, wa2:contains, evidence)
-//
-//		let fact = +(_, wa2:type, data:Resilience)
-//		+(evidence, wa2:contains, fact)
-//		+(fact, data:value, true)
-//	})
-//}
-	rule derive_replication_evidence {
-		let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
-			aws:VersioningConfiguration/aws:Status = "Enabled"
-		][
-			aws:ReplicationConfiguration/aws:Role
-		][
-			aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
-		]/core:Store)
+rule evaluate_aws_s3_resilience {
+    let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
+        aws:VersioningConfiguration/aws:Status = "Enabled"
+    ][
+        aws:ReplicationConfiguration/aws:Role
+    ][
+        aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
+    ]/core:Store)
 
-		*(store in replicated_stores, {
-			let evidence = +(_, wa2:type, core:Evidence)
-			+(evidence, core:value, "DataResilience")
-			+(store, wa2:contains, evidence)
-		})
-	}
+    *(store in replicated_stores, {
+        let evidence = +(_, wa2:type, core:Evidence)
+        +(store, wa2:contains, evidence)
+
+        let fact = +(_, wa2:type, data:Resilience)
+        +(evidence, wa2:contains, fact)
+        +(fact, data:value, true)
+    })
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // GOVERNANCE (loaded by enterprise, not developers)
 // ═══════════════════════════════════════════════════════════════════

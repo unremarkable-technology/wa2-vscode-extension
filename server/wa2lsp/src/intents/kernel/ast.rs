@@ -188,12 +188,14 @@ pub enum Expr {
 	Blank(Span),
 	/// Query: ?(//core:Store[...])
 	Query(QueryExpr),
-   /// Add expression: +(s, p, o) - returns subject
+	/// Add expression: +(s, p, o) - returns subject
 	Add(Box<AddExpr>),
 	/// Qualified name literal: core:Store
 	QName(QualifiedName),
 	/// String literal
 	String(String, Span),
+	/// Boolean literal
+	Bool(bool, Span),
 	/// empty(expr) builtin
 	Empty(Box<Expr>, Span),
 }

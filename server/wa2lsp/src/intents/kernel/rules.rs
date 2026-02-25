@@ -221,6 +221,8 @@ impl RuleEngine {
 
 			Expr::String(s, _) => Ok(EvalResult::Literal(s.clone())),
 
+         Expr::Bool(b, _) => Ok(EvalResult::Literal(b.to_string())),
+         
 			Expr::Empty(inner, _) => {
 				let value = self.eval_expr(model, inner, env)?;
 				Ok(if value.is_empty() {
