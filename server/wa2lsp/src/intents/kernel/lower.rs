@@ -1,7 +1,7 @@
 //! Lower AST to Model statements
 
 use crate::intents::kernel::ast::*;
-use crate::intents::model::Model;
+use crate::intents::model::{EntityId, Model};
 
 #[derive(Debug)]
 pub struct LowerError {
@@ -97,6 +97,14 @@ impl<'m> Lower<'m> {
 					.map_err(|e| LowerError {
 						message: format!("failed to create type '{}': {}", fqn, e),
 					})?;
+
+				// Get the entity id for annotation lowering
+				let entity_id = self.model.resolve(&fqn).ok_or_else(|| LowerError {
+					message: format!("failed to resolve type '{}' after creation", fqn),
+				})?;
+
+				// Lower @#doc annotations to predicates
+				self.lower_doc_annotations(entity_id, &type_decl.annotations)?;
 			}
 
 			Item::Struct(struct_decl) => {
@@ -106,6 +114,14 @@ impl<'m> Lower<'m> {
 					.map_err(|e| LowerError {
 						message: format!("failed to create struct '{}': {}", fqn, e),
 					})?;
+
+				// Get the entity id for annotation lowering
+				let entity_id = self.model.resolve(&fqn).ok_or_else(|| LowerError {
+					message: format!("failed to resolve struct '{}' after creation", fqn),
+				})?;
+
+				// Lower @#doc annotations to predicates
+				self.lower_doc_annotations(entity_id, &struct_decl.annotations)?;
 
 				for field in &struct_decl.fields {
 					let field_fqn = self.qualify(&field.name);
@@ -124,6 +140,14 @@ impl<'m> Lower<'m> {
 					.map_err(|e| LowerError {
 						message: format!("failed to create enum '{}': {}", fqn, e),
 					})?;
+
+				// Get the entity id for annotation lowering
+				let entity_id = self.model.resolve(&fqn).ok_or_else(|| LowerError {
+					message: format!("failed to resolve enum '{}' after creation", fqn),
+				})?;
+
+				// Lower @#doc annotations to predicates
+				self.lower_doc_annotations(entity_id, &enum_decl.annotations)?;
 
 				for variant in &enum_decl.variants {
 					let variant_fqn = self.qualify(variant);
@@ -171,6 +195,40 @@ impl<'m> Lower<'m> {
 				let qualified_name = self.qualify(&policy.name);
 				qualified_policy.name = qualified_name;
 				policies.push(qualified_policy);
+			}
+		}
+
+		Ok(())
+	}
+
+	/// Lower @#doc annotations to wa2:tldr, wa2:why, wa2:summary predicates
+	fn lower_doc_annotations(
+		&mut self,
+		entity_id: EntityId,
+		annotations: &[Annotation],
+	) -> Result<(), LowerError> {
+		for annotation in annotations {
+			// Check if this is a @#doc annotation
+			let is_doc = annotation.path.as_ref().map_or(false, |p| p.name == "doc");
+			if !is_doc {
+				continue;
+			}
+
+			for arg in &annotation.args {
+				let predicate = match arg.name.as_str() {
+					"tldr" => "wa2:tldr",
+					"why" => "wa2:why",
+					"summary" => "wa2:summary",
+					_ => continue, // ignore unknown doc fields
+				};
+
+				if let Literal::String(value) = &arg.value {
+					self.model
+						.apply_literal(entity_id, predicate, value)
+						.map_err(|e| LowerError {
+							message: format!("failed to set {} annotation: {}", predicate, e),
+						})?;
+				}
 			}
 		}
 
@@ -278,8 +336,8 @@ mod tests {
 		let mut lower = Lower::new(&mut model, "core").unwrap();
 		let result = lower.lower(&ast).unwrap();
 
-      // No rules in this snippet
-      assert!(result.rules.is_empty());
+		// No rules in this snippet
+		assert!(result.rules.is_empty());
 
 		eprintln!("{}", &model);
 		//panic!();

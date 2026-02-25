@@ -321,6 +321,18 @@ impl Model {
 		model.add_statement_raw(NAMESPACE_PRED, CARDINALITY, Value::Number(1));
 		model.add_statement_raw(CARDINALITY, CARDINALITY, Value::Number(1));
 
+		// wa2:tldr predicate (for @#doc annotations)
+		let tldr = model.add_entity_raw(Some("tldr"), Some(NAMESPACE));
+		model.add_statement_raw(tldr, TYPE_PRED, Value::Entity(PREDICATE));
+
+		// wa2:why predicate (for @#doc annotations)
+		let why = model.add_entity_raw(Some("why"), Some(NAMESPACE));
+		model.add_statement_raw(why, TYPE_PRED, Value::Entity(PREDICATE));
+
+		// wa2:summary predicate (for enum variant docs)
+		let summary = model.add_entity_raw(Some("summary"), Some(NAMESPACE));
+		model.add_statement_raw(summary, TYPE_PRED, Value::Entity(PREDICATE));
+
 		model
 	}
 
