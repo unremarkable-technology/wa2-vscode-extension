@@ -93,7 +93,9 @@ pub fn ensure_aws_types(model: &mut Model) -> Result<(), ModelError> {
 
 /// Ensure CFN-specific types and predicates exist in the model
 pub fn ensure_cfn_types(model: &mut Model) -> Result<(), ModelError> {
-	model.ensure_namespace("cfn")?;
+	model.ensure_namespace("aws")?; // Parent first
+	model.ensure_namespace("aws:cfn")?; // Nested namespace
+   
 	model.ensure_entity("cfn:Output")?;
 	model.ensure_entity("cfn:Resource")?;
 	model.ensure_entity("cfn:outputs")?;

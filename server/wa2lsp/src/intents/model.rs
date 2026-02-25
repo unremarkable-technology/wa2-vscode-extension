@@ -252,6 +252,7 @@ pub struct Model {
 	// Name resolution indexes
 	by_name: HashMap<String, EntityId>,                  // "aws" → id
 	by_qualified: HashMap<(EntityId, String), EntityId>, // (aws_id, "Bucket") → id
+	by_shortname: HashMap<String, Vec<EntityId>>, // "cfn" → [aws:cfn_id] (for nested namespaces)
 
 	// Traversal indexes
 	by_subject: HashMap<EntityId, Vec<StatementId>>, // outgoing
@@ -275,6 +276,7 @@ impl Model {
 			statements: Vec::new(),
 			by_name: HashMap::new(),
 			by_qualified: HashMap::new(),
+			by_shortname: HashMap::new(),
 			by_subject: HashMap::new(),
 			by_object: HashMap::new(),
 			by_predicate: HashMap::new(),
@@ -393,7 +395,15 @@ impl Model {
 		// Handle nested namespaces: parent:child
 		let id = if let Some((parent_name, local)) = name.split_once(':') {
 			let parent_id = self.ensure_namespace(parent_name)?;
-			self.add_entity_raw(Some(local), Some(parent_id))
+			let id = self.add_entity_raw(Some(local), Some(parent_id));
+
+			// Register short name for nested namespace
+			self.by_shortname
+				.entry(local.to_string())
+				.or_default()
+				.push(id);
+
+			id
 		} else {
 			self.add_entity_raw(Some(name), None)
 		};
@@ -411,8 +421,8 @@ impl Model {
 			return Ok(id);
 		}
 
-		// Parse namespace:local
-		if let Some((ns_name, local)) = name.split_once(':') {
+		// Parse namespace:local - split at LAST colon for nested namespaces
+		if let Some((ns_name, local)) = name.rsplit_once(':') {
 			let ns_id = self.resolve(ns_name).ok_or_else(|| {
 				ModelError::NotFound(format!("namespace '{}' not found", ns_name))
 			})?;
@@ -556,19 +566,27 @@ impl Model {
 	// ─── Resolution ───
 
 	/// Resolve name to entity ("aws" or "aws:Bucket" or raw "AWS::AccountId")
+	// Update resolve to check short names:
 	pub fn resolve(&self, name: &str) -> Option<EntityId> {
-		// First try exact match (handles raw names like "AWS::AccountId")
+		// First try exact match in top-level names
 		if let Some(&id) = self.by_name.get(name) {
 			return Some(id);
 		}
 
-		// Then try namespace:local parsing
-		if let Some((ns_name, local)) = name.split_once(':') {
+		// Then try namespace:local parsing - split at LAST colon
+		if let Some((ns_name, local)) = name.rsplit_once(':') {
 			let ns_id = self.resolve(ns_name)?;
-			self.by_qualified.get(&(ns_id, local.to_string())).copied()
-		} else {
-			None
+			return self.by_qualified.get(&(ns_id, local.to_string())).copied();
 		}
+
+		// Finally try short name lookup (for nested namespaces)
+		if let Some(ids) = self.by_shortname.get(name) {
+			if ids.len() == 1 {
+				return Some(ids[0]);
+			}
+		}
+
+		None
 	}
 
 	/// Get entity's qualified name
@@ -1171,7 +1189,7 @@ mod tests {
 	fn test_apply_statements() {
 		let mut model = Model::bootstrap();
 
-      model.ensure_namespace("core").unwrap();
+		model.ensure_namespace("core").unwrap();
 		// First ensure core types exist
 		model.apply("core:Store", "wa2:type", "wa2:Type").unwrap();
 		model.apply("core:Run", "wa2:type", "wa2:Type").unwrap();
@@ -1197,7 +1215,7 @@ mod tests {
 	fn test_apply_literals() {
 		let mut model = Model::bootstrap();
 
-      model.ensure_namespace("aws").unwrap();
+		model.ensure_namespace("aws").unwrap();
 		model.apply("bucket", "aws:name", "\"my-bucket\"").unwrap();
 
 		let bucket = model.resolve("bucket").expect("bucket should exist");
@@ -1211,7 +1229,7 @@ mod tests {
 	fn test_blank_nodes() {
 		let mut model = Model::bootstrap();
 
-      model.ensure_namespace("aws").unwrap();
+		model.ensure_namespace("aws").unwrap();
 		let bucket = model.ensure_entity("bucket").unwrap();
 		model.apply_to(bucket, "wa2:type", "wa2:Store").unwrap();
 
@@ -1240,7 +1258,7 @@ mod tests {
 	fn test_query_descendants() {
 		let mut model = Model::bootstrap();
 
-      model.ensure_namespace("core").unwrap();
+		model.ensure_namespace("core").unwrap();
 		// Ensure core types exist
 		model
 			.apply("core:Deployment", "wa2:type", "wa2:Type")
@@ -1279,7 +1297,7 @@ mod tests {
 	fn test_query_with_filter() {
 		let mut model = Model::bootstrap();
 
-      model.ensure_namespace("aws").unwrap();
+		model.ensure_namespace("aws").unwrap();
 		// Create root
 		let root = model.ensure_entity("root").unwrap();
 		model.set_root(root);
@@ -1342,8 +1360,8 @@ mod tests {
 	fn test_multiple_types() {
 		let mut model = Model::bootstrap();
 
-      model.ensure_namespace("core").unwrap();
-      model.ensure_namespace("aws").unwrap();
+		model.ensure_namespace("core").unwrap();
+		model.ensure_namespace("aws").unwrap();
 		// Ensure core:Store exists
 		model.apply("core:Store", "wa2:type", "wa2:Type").unwrap();
 

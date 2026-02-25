@@ -200,13 +200,13 @@ mod tests {
 			.apply_entity(resources, "wa2:contains", bucket)
 			.unwrap();
 
-		eprintln!("Before rules:\n{}", model);
+		//eprintln!("Before rules:\n{}", model);
 
 		// 3. Run rules
 		let mut engine = RuleEngine::new();
 		engine.run(&mut model, &rules).expect("run rules");
 
-		eprintln!("After rules:\n{}", model);
+		//eprintln!("After rules:\n{}", model);
 
 		// 4. Verify core:Store was created
 		let store_type = model
@@ -306,7 +306,7 @@ mod tests {
 		let mut engine = RuleEngine::new();
 		engine.run(&mut model, &rules).expect("run rules");
 
-		eprintln!("After rules:\n{}", model);
+		//eprintln!("After rules:\n{}", model);
 
 		// Verify core:Store was created for SourceBucket
 		let store_type = model
@@ -348,6 +348,6 @@ mod tests {
 			Some("DataResilience".to_string()),
 			"Evidence should be DataResilience"
 		);
-      panic!();
+      //panic!();
 	}
 }

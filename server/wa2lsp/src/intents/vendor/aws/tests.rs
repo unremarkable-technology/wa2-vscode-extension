@@ -15,10 +15,26 @@ mod tests {
 		},
 		intents::{
 			guidance::{FocusTaxonomy, guidance, has_evidence},
+			kernel::Kernel,
 			model::{Model, Query, print_model_as_tree},
-			vendor::{DocumentFormat, Method, Vendor, get_projector},
+			vendor::{DocumentFormat, Method, Vendor},
 		},
 	};
+
+	fn project_and_analyse(yaml: &str) -> Model {
+		let kernel = Kernel::new();
+		let uri = Url::parse("file:///test.yaml").unwrap();
+		let result = kernel
+			.analyse(
+				yaml,
+				&uri,
+				DocumentFormat::Yaml,
+				Vendor::Aws,
+				Method::CloudFormation,
+			)
+			.expect("analysis should succeed");
+		result.model
+	}
 
 	/// Loads the real CFN spec (blocking). Cached after first call.
 	/// Panics if spec can't be loaded.
@@ -61,11 +77,7 @@ Resources:
           Value: NonCritical
 "#;
 
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(cfn_text);
 
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
@@ -91,11 +103,7 @@ Resources:
           Value: MissionCritical
 "#;
 
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(cfn_text);
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
 
@@ -104,7 +112,7 @@ Resources:
 		eprintln!("Guidance:\n===\n{:?}", guides);
 
 		assert_eq!(guides.len(), 1);
-		assert!(matches!(guides[0].focus, FocusTaxonomy::DataResiliance));
+		assert!(matches!(guides[0].focus, FocusTaxonomy::DataResilience));
 	}
 
 	#[test]
@@ -131,11 +139,7 @@ Resources:
     Type: AWS::SQS::Queue
 "#;
 
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(cfn_text);
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
 
@@ -168,11 +172,7 @@ Resources:
         ZipFile: "def handler(e,c): pass"
 "#;
 
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(cfn_text);
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
 
@@ -199,6 +199,8 @@ Resources:
           Value: Confidential
         - Key: DataCriticality
           Value: BusinessCritical
+      VersioningConfiguration:
+        Status: Enabled
       ReplicationConfiguration:
         Role: !GetAtt ReplicationRole.Arn
         Rules:
@@ -213,11 +215,7 @@ Resources:
         Statement: []
 "#;
 
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(cfn_text);
 
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
 
@@ -243,7 +241,7 @@ Resources:
 			})
 			.expect("should find core:Store for Bucket1");
 
-		assert!(has_evidence(&model, *store_node, "DataResiliance"));
+		assert!(has_evidence(&model, *store_node, "DataResilience"));
 		assert!(!has_evidence(&model, *store_node, "SomethingElse"));
 	}
 
@@ -259,11 +257,7 @@ Resources:
           Value: Test
 "#;
 
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(cfn_text);
 		//eprintln!("\nModel:\n===\n{}", &model);
 
 		// GUIDANCE: is guidance required?
@@ -280,11 +274,7 @@ Resources:
 		println!("{}", env::current_dir().unwrap().display());
 		let path = Path::new("../../examples/tutorial/0.naive.yaml");
 		let cfn_text = std::fs::read_to_string(path).unwrap();
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(&cfn_text);
 
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
@@ -302,11 +292,7 @@ Resources:
 		println!("{}", env::current_dir().unwrap().display());
 		let path = Path::new("../../examples/tutorial/1.calm.yaml");
 		let cfn_text = std::fs::read_to_string(path).unwrap();
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(&cfn_text);
 
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
@@ -324,11 +310,7 @@ Resources:
 		println!("{}", env::current_dir().unwrap().display());
 		let path = Path::new("../../examples/tutorial/2.wa2tags.yaml");
 		let cfn_text = std::fs::read_to_string(path).unwrap();
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(&cfn_text);
 
 		//eprintln!("\nModel:\n===\n{}", &model);
 		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
@@ -337,7 +319,7 @@ Resources:
 		let guides = guidance(&model);
 		eprintln!("Guidance:\n===\n{:?}", guides);
 		assert_eq!(guides.len(), 1, "should fail: not tagged");
-		assert!(matches!(guides[0].focus, FocusTaxonomy::DataResiliance));
+		assert!(matches!(guides[0].focus, FocusTaxonomy::DataResilience));
 	}
 
 	#[test]
@@ -345,14 +327,9 @@ Resources:
 		println!("{}", env::current_dir().unwrap().display());
 		let path = Path::new("../../examples/tutorial/3.with-replication.yaml");
 		let cfn_text = std::fs::read_to_string(path).unwrap();
-		let projector = get_projector(Vendor::Aws, Method::CloudFormation);
-		let mut model = Model::bootstrap();
-		projector
-			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
-			.unwrap();
+		let model = project_and_analyse(&cfn_text);
 
-		//eprintln!("\nModel:\n===\n{}", &model);
-		eprintln!("\nModel:\n===\n{}", print_model_as_tree(&model));
+		eprintln!("\nModel:\n===\n{}", &model);
 
 		// GUIDANCE: is guidance required?
 		let guides = guidance(&model);

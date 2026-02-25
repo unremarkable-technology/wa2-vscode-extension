@@ -119,31 +119,31 @@ namespace data {
 // - rule: evaluates and creates evidence
 // - evidence: facts attached to nodes
 
-policy protect_critical_data {
-	must ensure_stores_have_data_criticality
-	must ensure_critical_stores_are_protected
-}
-
-rule ensure_stores_have_data_criticality {
-	let scope = ?(//core:Store)
-
-	// for all in scope, do we satisfy
-	*(store in scope, {
-		must ?(store/core:Evidence/data:Criticality)
-	})
-}
-
-rule ensure_critical_stores_are_protected {
-	// what do i look against
-	let scope = ?(//core:Store[
-		core:Evidence/data:Criticality = true
-	])
-
-	// for all in scope, do we satisfy
-	*(store in scope, {
-		must ?(store/core:Evidence/data:Resilience = true)
-	})
-}
+//policy protect_critical_data {
+//	must ensure_stores_have_data_criticality
+//	must ensure_critical_stores_are_protected
+//}
+//
+//rule ensure_stores_have_data_criticality {
+//	let scope = ?(//core:Store)
+//
+//	// for all in scope, do we satisfy
+//	*(store in scope, {
+//		must ?(store/core:Evidence/data:Criticality)
+//	})
+//}
+//
+//rule ensure_critical_stores_are_protected {
+//	// what do i look against
+//	let scope = ?(//core:Store[
+//		core:Evidence/data:Criticality = true
+//	])
+//
+//	// for all in scope, do we satisfy
+//	*(store in scope, {
+//		must ?(store/core:Evidence/data:Resilience = true)
+//	})
+//}
 
 // ═══════════════════════════════════════════════════════════════════
 // USER CODE
@@ -155,56 +155,70 @@ rule ensure_critical_stores_are_protected {
 // the framework can require data protection for critical stores
 // without understanding tagging, CFN, AWS Services, or S3 replication.
 
-enum DataCriticalityTagging {
-	MissionCritical,   // existential / legal / safety impact
-	BusinessCritical,  // major financial or operational impact
-	Important,         // painful but survivable
-	NonCritical,       // inconvenience only
-	Disposable         // safe to lose
-}
+//enum DataCriticalityTagging {
+//	MissionCritical,   // existential / legal / safety impact
+//	BusinessCritical,  // major financial or operational impact
+//	Important,         // painful but survivable
+//	NonCritical,       // inconvenience only
+//	Disposable         // safe to lose
+//}
+//
+//rule evaluate_aws_cfn_stores {
+//	let cfn_resources = ?(//cfn:Resource)
+//
+//	*(cfn_resource in cfn_resources, {
+//		let dc_tag = ?(cfn_resource/aws:Tags[aws:Key = 'DataCriticality']/aws:Value)
+//		
+//		// ~() converts in a mode (strict or lazy) from a value into destination type
+//		// in this case "strict" means it we cause a assert failure if any problems
+//		let is_critical = ~(strict, dc_tag, DataCriticalityTagging {
+//			MissionCritical, BusinessCritical => true,
+//			_ => false,
+//		})
+//
+//		let store = ?(cfn_resource/core:Store)
+//		let evidence = +(_, wa2:type, core:Evidence)
+//		+(store, wa2:contains, evidence)
+//
+//		let fact = +(_, wa2:type, data:Criticality)
+//		+(evidence, wa2:contains, fact)
+//		+(fact, data:value, is_critical)
+//	})
+//}
+//
+//rule evaluate_aws_s3_resilience {
+//	let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
+//		aws:VersioningConfiguration/aws:Status = "Enabled"
+//	][
+//		aws:ReplicationConfiguration/aws:Role
+//	][
+//		aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
+//	]/core:Store)
+//
+//	*(store in replicated_stores, {
+//		let evidence = +(_, wa2:type, core:Evidence)
+//		+(store, wa2:contains, evidence)
+//
+//		let fact = +(_, wa2:type, data:Resilience)
+//		+(evidence, wa2:contains, fact)
+//		+(fact, data:value, true)
+//	})
+//}
+	rule derive_replication_evidence {
+		let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
+			aws:VersioningConfiguration/aws:Status = "Enabled"
+		][
+			aws:ReplicationConfiguration/aws:Role
+		][
+			aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
+		]/core:Store)
 
-rule evaluate_aws_cfn_stores {
-	let cfn_resources = ?(//cfn:Resource)
-
-	*(cfn_resource in cfn_resources, {
-		let dc_tag = ?(cfn_resource/aws:Tags[aws:Key = 'DataCriticality']/aws:Value)
-		
-		// ~() converts in a mode (strict or lazy) from a value into destination type
-		// in this case "strict" means it we cause a assert failure if any problems
-		let is_critical = ~(strict, dc_tag, DataCriticalityTagging {
-			MissionCritical, BusinessCritical => true,
-			_ => false,
+		*(store in replicated_stores, {
+			let evidence = +(_, wa2:type, core:Evidence)
+			+(evidence, core:value, "DataResilience")
+			+(store, wa2:contains, evidence)
 		})
-
-		let store = ?(cfn_resource/core:Store)
-		let evidence = +(_, wa2:type, core:Evidence)
-		+(store, wa2:contains, evidence)
-
-		let fact = +(_, wa2:type, data:Criticality)
-		+(evidence, wa2:contains, fact)
-		+(fact, data:value, is_critical)
-	})
-}
-
-rule evaluate_aws_s3_resilience {
-	let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
-		aws:VersioningConfiguration/aws:Status = "Enabled"
-	][
-		aws:ReplicationConfiguration/aws:Role
-	][
-		aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
-	]/core:Store)
-
-	*(store in replicated_stores, {
-		let evidence = +(_, wa2:type, core:Evidence)
-		+(store, wa2:contains, evidence)
-
-		let fact = +(_, wa2:type, data:Resilience)
-		+(evidence, wa2:contains, fact)
-		+(fact, data:value, true)
-	})
-}
-
+	}
 // ═══════════════════════════════════════════════════════════════════
 // GOVERNANCE (loaded by enterprise, not developers)
 // ═══════════════════════════════════════════════════════════════════

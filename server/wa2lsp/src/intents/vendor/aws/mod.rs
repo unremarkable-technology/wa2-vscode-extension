@@ -1,7 +1,6 @@
 //! AWS vendor projector
 
 mod cfn_projector;
-mod derivation;
 mod tests;
 
 use tower_lsp::lsp_types::{Diagnostic, Url};
@@ -64,12 +63,6 @@ pub fn project_template_into(model: &mut Model, template: &CfnTemplate) -> Resul
 	cfn_projector::project_pseudo_parameters(model, template_entity)?;
 
 	let entities = cfn_projector::project_resources(model, template_entity, &template.resources)?;
-
-	// Derive phase
-	for entity in entities {
-		derivation::derive_wa2_type(model, entity, workload)?;
-		derivation::derive_evidence(model, entity)?;
-	}
 
 	Ok(())
 }

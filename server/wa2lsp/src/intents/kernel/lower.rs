@@ -16,18 +16,38 @@ pub struct Lower<'m> {
 
 impl<'m> Lower<'m> {
 	pub fn new(model: &'m mut Model, default_namespace: &str) -> Result<Self, LowerError> {
-		// Ensure namespace entity exists and is typed
-		model
-			.ensure_namespace(default_namespace)
-			.map_err(|e| LowerError {
-				message: format!("failed to create namespace '{}': {}", default_namespace, e),
-			})?;
-
+		if !default_namespace.is_empty() {
+			model
+				.ensure_namespace(default_namespace)
+				.map_err(|e| LowerError {
+					message: format!(
+						"failed to create default namespace '{}': {}",
+						default_namespace, e
+					),
+				})?;
+		}
 		Ok(Self {
 			model,
-			namespace_stack: vec![default_namespace.to_string()],
+			namespace_stack: Vec::new(),
 			default_namespace: default_namespace.to_string(),
 		})
+	}
+
+	fn current_namespace(&self) -> String {
+		if self.namespace_stack.is_empty() {
+			self.default_namespace.clone()
+		} else {
+			self.namespace_stack.join(":")
+		}
+	}
+
+	fn qualify(&self, name: &str) -> String {
+		let ns = self.current_namespace();
+		if ns.is_empty() {
+			name.to_string()
+		} else {
+			format!("{}:{}", ns, name)
+		}
 	}
 
 	/// Lower AST to model, returns rules for later execution
@@ -41,114 +61,104 @@ impl<'m> Lower<'m> {
 		Ok(rules)
 	}
 
-	fn current_namespace(&self) -> Option<String> {
-		if self.namespace_stack.is_empty() {
-			None
-		} else {
-			Some(self.namespace_stack.join(":"))
-		}
-	}
-
-	fn qualify(&self, name: &str) -> String {
-		match self.current_namespace() {
-			Some(ns) => format!("{}:{}", ns, name),
-			None => name.to_string(),
-		}
-	}
-
 	fn lower_item(&mut self, item: &Item, rules: &mut Vec<Rule>) -> Result<(), LowerError> {
 		match item {
 			Item::Namespace(ns) => {
-				// Namespace names are always absolute (root-level), not qualified by context
-				self.model
-					.ensure_namespace(&ns.name)
-					.map_err(|e| LowerError {
-						message: format!("failed to create namespace '{}': {}", ns.name, e),
-					})?;
+				// Push namespace onto stack (enables nesting)
+				self.namespace_stack.push(ns.name.clone());
 
-				// Save current stack, replace with just this namespace
-				let saved_stack =
-					std::mem::replace(&mut self.namespace_stack, vec![ns.name.clone()]);
+				// Create the namespace entity with fully qualified name
+				let fqn = self.namespace_stack.join(":");
+				self.model.ensure_namespace(&fqn).map_err(|e| LowerError {
+					message: format!("failed to create namespace '{}': {}", fqn, e),
+				})?;
 
+				// Lower items inside
 				for inner in &ns.items {
 					self.lower_item(inner, rules)?;
 				}
 
-				// Restore previous stack
-				self.namespace_stack = saved_stack;
+				// Pop when done
+				self.namespace_stack.pop();
 			}
 
-			Item::Struct(s) => {
-				let qname = self.qualify(&s.name);
-				// +(qname, wa2:type, wa2:Type)
+			Item::Type(type_decl) => {
+				let fqn = self.qualify(&type_decl.name);
 				self.model
-					.apply(&qname, "wa2:type", "wa2:Type")
+					.apply(&fqn, "wa2:type", "wa2:Type")
 					.map_err(|e| LowerError {
-						message: format!("failed to create struct type {}: {:?}", qname, e),
+						message: format!("failed to create type '{}': {}", fqn, e),
 					})?;
-
-				// TODO: lower fields as predicates with domain/range
 			}
 
-			Item::Enum(e) => {
-				let base_qname = self.qualify(&e.name);
-				// +(base, wa2:type, wa2:Type)
+			Item::Struct(struct_decl) => {
+				let fqn = self.qualify(&struct_decl.name);
 				self.model
-					.apply(&base_qname, "wa2:type", "wa2:Type")
+					.apply(&fqn, "wa2:type", "wa2:Type")
 					.map_err(|e| LowerError {
-						message: format!("failed to create enum type {}: {:?}", base_qname, e),
+						message: format!("failed to create struct '{}': {}", fqn, e),
 					})?;
 
-				// Each variant is a subtype
-				for variant in &e.variants {
-					let variant_qname = self.qualify(variant);
+				// Fields become predicates
+				for field in &struct_decl.fields {
+					let field_fqn = self.qualify(&field.name);
 					self.model
-						.apply(&variant_qname, "wa2:type", "wa2:Type")
+						.apply(&field_fqn, "wa2:type", "wa2:Predicate")
 						.map_err(|e| LowerError {
-							message: format!("failed to create variant {}: {:?}", variant_qname, e),
-						})?;
-					self.model
-						.apply(&variant_qname, "wa2:subTypeOf", &base_qname)
-						.map_err(|e| LowerError {
-							message: format!(
-								"failed to set subtype for {}: {:?}",
-								variant_qname, e
-							),
+							message: format!("failed to create field '{}': {}", field_fqn, e),
 						})?;
 				}
 			}
 
-			Item::Type(t) => {
-				let qname = self.qualify(&t.name);
+			Item::Enum(enum_decl) => {
+				let fqn = self.qualify(&enum_decl.name);
 				self.model
-					.apply(&qname, "wa2:type", "wa2:Type")
+					.apply(&fqn, "wa2:type", "wa2:Type")
 					.map_err(|e| LowerError {
-						message: format!("failed to create type {}: {:?}", qname, e),
+						message: format!("failed to create enum '{}': {}", fqn, e),
+					})?;
+
+				// Variants are strings
+				for variant in &enum_decl.variants {
+					let variant_fqn = self.qualify(variant); // variant is already a String
+					self.model
+						.apply(&variant_fqn, "wa2:type", "wa2:Type")
+						.map_err(|e| LowerError {
+							message: format!("failed to create variant '{}': {}", variant_fqn, e),
+						})?;
+					self.model
+						.apply(&variant_fqn, "wa2:subTypeOf", &fqn)
+						.map_err(|e| LowerError {
+							message: format!("failed to set subtype for '{}': {}", variant_fqn, e),
+						})?;
+				}
+			}
+
+			Item::Predicate(pred_decl) => {
+				let fqn = self.qualify(&pred_decl.name);
+				self.model
+					.apply(&fqn, "wa2:type", "wa2:Predicate")
+					.map_err(|e| LowerError {
+						message: format!("failed to create predicate '{}': {}", fqn, e),
 					})?;
 			}
 
-			Item::Predicate(p) => {
-				let qname = self.qualify(&p.name);
+			Item::Instance(inst) => {
+				let entity_name = &inst.name.to_string();
+				let type_name = &inst.ty.to_string(); // .ty not .type_name
 				self.model
-					.apply(&qname, "wa2:type", "wa2:Predicate")
+					.apply(entity_name, "wa2:type", type_name)
 					.map_err(|e| LowerError {
-						message: format!("failed to create predicate {}: {:?}", qname, e),
+						message: format!("failed to create instance '{}': {}", entity_name, e),
 					})?;
 			}
 
-			Item::Instance(i) => {
-				let name = i.name.to_string();
-				let ty = i.ty.to_string();
-				self.model
-					.apply(&name, "wa2:type", &ty)
-					.map_err(|e| LowerError {
-						message: format!("failed to create instance {}: {:?}", name, e),
-					})?;
-			}
-
-			Item::Rule(r) => {
-				// Collect rules for later execution
-				rules.push(r.clone());
+			Item::Rule(rule) => {
+				// Clone rule and qualify its name with current namespace
+				let mut qualified_rule = rule.clone();
+				let qualified_name = self.qualify(&rule.name);
+				qualified_rule.name = qualified_name;
+				rules.push(qualified_rule);
 			}
 		}
 

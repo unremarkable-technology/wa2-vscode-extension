@@ -23,9 +23,8 @@ pub enum GuideLevel {
 pub enum FocusTaxonomy {
 	DataSensitivity,
 	DataCriticality,
-	DataResiliance,
+	DataResilience,
 }
-
 // ─── Query Helpers ───
 
 /// Get the cfn:Resource linked to a core:Node
@@ -120,7 +119,7 @@ pub fn guidance(model: &Model) -> Vec<Guide> {
 		// Check critical data is backed up (evidence on the core:Node)
 		if let Some(criticality) = get_tag_value(model, cfn_resource, "DataCriticality") {
 			if (criticality == "MissionCritical" || criticality == "BusinessCritical")
-				&& !has_evidence(model, node, "DataResiliance")
+				&& !has_evidence(model, node, "DataResilience")
 			{
 				guides.push(Guide {
 					entity: cfn_resource,
@@ -132,7 +131,7 @@ pub fn guidance(model: &Model) -> Vec<Guide> {
                         Backup, Snapshots or Replication are common solutions."
 						.to_string(),
 					level: GuideLevel::Action,
-					focus: FocusTaxonomy::DataResiliance,
+					focus: FocusTaxonomy::DataResilience,
 				});
 			}
 		}
