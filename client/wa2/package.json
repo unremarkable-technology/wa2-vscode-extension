@@ -1,82 +1,100 @@
 {
-	"name": "wa2",
-	"displayName": "WA2 - AWS Well-Architected",
-	"description": "CloudFormation validation + Well-Architected best practices. Real-time architectural guidance as you build.",
-	"version": "0.0.19",
-	"engines": {
-		"vscode": "^1.95.0"
-	},
-	"publisher": "FigmentEngineLtd",
-	"categories": [
-		"Programming Languages",
-		"Linters"
-	],
-	"keywords": [
-		"cloudformation",
-		"aws",
-		"well-architected",
-		"infrastructure",
-		"iaac",
-		"cloud",
-		"validation"
-	],
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/unremarkable-technology/wa2-vscode-extension"
-	},
-	"main": "./out/extension.js",
-	"scripts": {
-		"vscode:prepublish": "npm run bundle && npm run copy-server",
-		"compile": "tsc -p ./",
-		"bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
-		"build-server": "toolbox run -c rust bash -lc 'cd ../../server/wa2lsp && cargo build --release'",
-		"copy-server": "mkdir -p bin && cp /var/mnt/volatile/build/wa2/release/wa2lsp bin/ || echo 'Binary not found, please run: npm run build-server first'",
-		"watch": "tsc -watch -p ./",
-		"pretest": "npm run compile && npm run lint",
-		"lint": "eslint src",
-		"test": "vscode-test"
-	},
-	"devDependencies": {
-		"@types/mocha": "^10.0.10",
-		"@types/node": "22.x",
-		"@types/vscode": "^1.95.0",
-		"@vscode/test-cli": "^0.0.12",
-		"@vscode/test-electron": "^2.5.2",
-		"esbuild": "^0.27.2",
-		"eslint": "^9.39.1",
-		"typescript": "^5.9.3",
-		"typescript-eslint": "^8.46.3"
-	},
-	"dependencies": {
-		"vscode-languageclient": "^9.0.1"
-	},
-	"contributes": {
-		"languages": [
-			{
-				"id": "cloudformation-yaml",
-				"aliases": [
-					"CloudFormation (YAML)",
-					"cfn-yaml"
-				],
-				"extensions": [
-					".yaml",
-					".yml"
-				],
-				"configuration": "./language-configuration.json"
-			},
-			{
-				"id": "cloudformation-json",
-				"aliases": [
-					"CloudFormation (JSON)",
-					"cfn-json"
-				],
-				"extensions": [
-					".json",
-					".cfn",
-					".template"
-				],
-				"configuration": "./language-configuration.json"
-			}
-		]
-	}
+   "name": "wa2",
+   "displayName": "WA2 - AWS Well-Architected",
+   "description": "CloudFormation validation + Well-Architected best practices. Real-time architectural guidance as you build.",
+   "version": "0.0.19",
+   "engines": {
+      "vscode": "^1.95.0"
+   },
+   "publisher": "FigmentEngineLtd",
+   "categories": [
+      "Programming Languages",
+      "Linters"
+   ],
+   "keywords": [
+      "cloudformation",
+      "aws",
+      "well-architected",
+      "infrastructure",
+      "iaac",
+      "cloud",
+      "validation"
+   ],
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/unremarkable-technology/wa2-vscode-extension"
+   },
+   "main": "./out/extension.js",
+   "scripts": {
+      "vscode:prepublish": "npm run bundle && npm run copy-server",
+      "compile": "tsc -p ./",
+      "bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
+      "build-server": "toolbox run -c rust bash -lc 'cd ../../server/wa2lsp && cargo build --release'",
+      "copy-server": "mkdir -p bin && cp /var/mnt/volatile/build/wa2/release/wa2lsp bin/ || echo 'Binary not found, please run: npm run build-server first'",
+      "watch": "tsc -watch -p ./",
+      "pretest": "npm run compile && npm run lint",
+      "lint": "eslint src",
+      "test": "vscode-test"
+   },
+   "devDependencies": {
+      "@types/mocha": "^10.0.10",
+      "@types/node": "22.x",
+      "@types/vscode": "^1.95.0",
+      "@vscode/test-cli": "^0.0.12",
+      "@vscode/test-electron": "^2.5.2",
+      "esbuild": "^0.27.2",
+      "eslint": "^9.39.1",
+      "typescript": "^5.9.3",
+      "typescript-eslint": "^8.46.3"
+   },
+   "dependencies": {
+      "vscode-languageclient": "^9.0.1"
+   },
+   "contributes": {
+      "languages": [
+         {
+            "id": "cloudformation-yaml",
+            "aliases": [
+               "CloudFormation (YAML)",
+               "cfn-yaml"
+            ],
+            "extensions": [
+               ".yaml",
+               ".yml"
+            ],
+            "configuration": "./language-configuration.json"
+         },
+         {
+            "id": "cloudformation-json",
+            "aliases": [
+               "CloudFormation (JSON)",
+               "cfn-json"
+            ],
+            "extensions": [
+               ".json",
+               ".cfn",
+               ".template"
+            ],
+            "configuration": "./language-configuration.json"
+         },
+         {
+            "id": "wa2",
+            "aliases": [
+               "WA2",
+               "wa2"
+            ],
+            "extensions": [
+               ".wa2"
+            ],
+            "configuration": "./language-configuration-wa2.json"
+         }
+      ],
+      "grammars": [
+         {
+            "language": "wa2",
+            "scopeName": "source.wa2",
+            "path": "./syntaxes/wa2.tmLanguage.json"
+         }
+      ]
+   }
 }
