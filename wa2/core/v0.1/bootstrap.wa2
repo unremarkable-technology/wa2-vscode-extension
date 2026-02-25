@@ -100,12 +100,8 @@ instance core:workload: core:Workload
 // ═══════════════════════════════════════════════════════════════════
 
 namespace data {
-	struct Criticality {
-		value: Bool
-	}
-	struct Resilience {
-		value: Bool
-	}
+	struct Criticality {}
+	struct Resilience {}
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -119,31 +115,31 @@ namespace data {
 // - rule: evaluates and creates evidence
 // - evidence: facts attached to nodes
 
-//policy protect_critical_data {
-//	must ensure_stores_have_data_criticality
-//	must ensure_critical_stores_are_protected
-//}
-//
-//rule ensure_stores_have_data_criticality {
-//	let scope = ?(//core:Store)
-//
-//	// for all in scope, do we satisfy
-//	*(store in scope, {
-//		must ?(store/core:Evidence/data:Criticality)
-//	})
-//}
-//
-//rule ensure_critical_stores_are_protected {
-//	// what do i look against
-//	let scope = ?(//core:Store[
-//		core:Evidence/data:Criticality = true
-//	])
-//
-//	// for all in scope, do we satisfy
-//	*(store in scope, {
-//		must ?(store/core:Evidence/data:Resilience = true)
-//	})
-//}
+policy protect_critical_data {
+	must ensure_stores_have_data_criticality
+	must ensure_critical_stores_are_protected
+}
+
+rule ensure_stores_have_data_criticality {
+	let scope = ?(//core:Store)
+
+	// for all in scope, do we satisfy
+	*(store in scope, {
+		must ?(store/core:Evidence/data:Criticality)
+	})
+}
+
+rule ensure_critical_stores_are_protected {
+	// what do i look against
+	let scope = ?(//core:Store[
+		core:Evidence/data:Criticality
+	])
+
+	// for all in scope, do we satisfy
+	*(store in scope, {
+		must ?(store/core:Evidence/data:Resilience)
+	})
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // USER CODE
@@ -182,7 +178,7 @@ namespace data {
 //
 //		let fact = +(_, wa2:type, data:Criticality)
 //		+(evidence, wa2:contains, fact)
-//		+(fact, data:value, is_critical)
+//		how do we only add if is_critical true?
 //	})
 //}
 //
@@ -201,7 +197,6 @@ rule evaluate_aws_s3_resilience {
 
         let fact = +(_, wa2:type, data:Resilience)
         +(evidence, wa2:contains, fact)
-        +(fact, data:value, true)
     })
 }
 

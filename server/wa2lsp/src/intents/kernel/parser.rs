@@ -156,11 +156,65 @@ fn parse_item(p: &mut Parser) -> Result<Item, ParseError> {
 		Some(Token::KwPredicate) => parse_predicate(p).map(Item::Predicate),
 		Some(Token::KwInstance) => parse_instance(p).map(Item::Instance),
 		Some(Token::KwRule) => parse_rule(p).map(Item::Rule),
+		Some(Token::KwPolicy) => parse_policy(p).map(Item::Policy),
 		other => Err(ParseError {
 			message: format!("expected item, got {:?}", other),
 			span: p.span.clone(),
 		}),
 	}
+}
+
+fn parse_policy(p: &mut Parser) -> Result<Policy, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwPolicy)?;
+	let name = p.expect_ident()?;
+	p.expect(Token::LBrace)?;
+
+	let mut bindings = Vec::new();
+	while !p.at(&Token::RBrace) {
+		bindings.push(parse_policy_binding(p)?);
+	}
+
+	p.expect(Token::RBrace)?;
+
+	Ok(Policy {
+		name,
+		bindings,
+		span: start..p.span.end,
+	})
+}
+
+fn parse_policy_binding(p: &mut Parser) -> Result<PolicyBinding, ParseError> {
+	let start = p.span.start;
+
+	let modal = match &p.current {
+		Some(Token::KwMust) => {
+			p.advance();
+			Modal::Must
+		}
+		Some(Token::KwShould) => {
+			p.advance();
+			Modal::Should
+		}
+		Some(Token::KwMay) => {
+			p.advance();
+			Modal::May
+		}
+		other => {
+			return Err(ParseError {
+				message: format!("expected modal (must/should/may), got {:?}", other),
+				span: p.span.clone(),
+			});
+		}
+	};
+
+	let rule_name = parse_qualified_name(p)?;
+
+	Ok(PolicyBinding {
+		modal,
+		rule_name,
+		span: start..p.span.end,
+	})
 }
 
 fn parse_annotations(p: &mut Parser) -> Result<Vec<Annotation>, ParseError> {
@@ -372,11 +426,23 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, ParseError> {
 		Some(Token::Plus) => parse_add_stmt(p).map(Statement::Add),
 		Some(Token::Star) => parse_iterate_stmt(p).map(Statement::Iterate),
 		Some(Token::At) => parse_assert_stmt(p).map(Statement::Assert),
+		Some(Token::KwMust) => parse_must_stmt(p).map(Statement::Must),
 		other => Err(ParseError {
 			message: format!("expected statement, got {:?}", other),
 			span: p.span.clone(),
 		}),
 	}
+}
+
+fn parse_must_stmt(p: &mut Parser) -> Result<MustStmt, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwMust)?;
+	let expr = parse_expr(p)?;
+
+	Ok(MustStmt {
+		expr,
+		span: start..p.span.end,
+	})
 }
 
 fn parse_let_stmt(p: &mut Parser) -> Result<LetStmt, ParseError> {
@@ -546,6 +612,18 @@ fn parse_query_path(p: &mut Parser) -> Result<QueryPath, ParseError> {
 	let start = p.span.start;
 	let mut steps = Vec::new();
 
+	// Handle paths that start with a variable or qualified name (e.g., store/core:Evidence)
+	if p.at_name() {
+		let qname = parse_qualified_name(p)?;
+		steps.push(QueryStep {
+			axis: Axis::Child,
+			node_test: Some(qname),
+			predicates: Vec::new(),
+			span: start..p.span.end,
+		});
+	}
+
+	// Then handle /step or //step
 	while p.at(&Token::Slash) || p.at(&Token::DoubleSlash) {
 		steps.push(parse_query_step(p)?);
 	}

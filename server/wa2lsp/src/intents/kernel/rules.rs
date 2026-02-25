@@ -90,42 +90,40 @@ impl RuleEngine {
 	) -> Result<(), RuleError> {
 		match stmt {
 			Statement::Let(let_stmt) => {
-				let value = match &let_stmt.value {
-					Expr::Add(_) => {
-						let entity = self.eval_expr_to_entity(model, &let_stmt.value, env)?;
-						EvalResult::Entity(entity)
-					}
-					_ => self.eval_expr(model, &let_stmt.value, env)?,
-				};
+				let value = self.eval_expr(model, &let_stmt.value, env)?;
 				env.bind(let_stmt.name.clone(), value);
 			}
 
 			Statement::Add(add_stmt) => {
 				let subject = self.eval_expr_to_entity(model, &add_stmt.subject, env)?;
-				let predicate = &add_stmt.predicate.to_string();
+				let pred_name = add_stmt.predicate.to_string();
 				let object = self.eval_expr(model, &add_stmt.object, env)?;
 
 				match object {
 					EvalResult::Entity(obj_id) => {
 						model
-							.apply_entity(subject, predicate, obj_id)
+							.apply_entity(subject, &pred_name, obj_id)
 							.map_err(|e| RuleError {
-								message: format!("add failed: {:?}", e),
+								message: format!("failed to add statement: {}", e),
 							})?;
 					}
 					EvalResult::Literal(s) => {
 						model
-							.apply_to(subject, predicate, &format!("\"{}\"", s))
+							.apply_literal(subject, &pred_name, &s)
 							.map_err(|e| RuleError {
-								message: format!("add failed: {:?}", e),
+								message: format!("failed to add statement: {}", e),
 							})?;
 					}
 					EvalResult::Set(_) => {
 						return Err(RuleError {
-							message: "cannot use set as object in add statement".to_string(),
+							message: "cannot use set as object".to_string(),
 						});
 					}
-					EvalResult::Empty => {}
+					EvalResult::Empty => {
+						return Err(RuleError {
+							message: "cannot use empty as object".to_string(),
+						});
+					}
 				}
 			}
 
@@ -138,18 +136,15 @@ impl RuleEngine {
 				};
 
 				for entity in entities {
-					// Build new reference binding
 					let mut new_binding = reference_binding.clone();
 					new_binding.push((iter_stmt.var.clone(), entity));
 
-					// Check if already processed
 					let key = (rule_name.to_string(), new_binding.clone());
 					if self.processed.contains(&key) {
 						continue;
 					}
 					self.processed.insert(key);
 
-					// Execute body
 					let mut inner_env = env.clone();
 					inner_env.bind(iter_stmt.var.clone(), EvalResult::Entity(entity));
 					self.execute_statements(
@@ -163,19 +158,23 @@ impl RuleEngine {
 			}
 
 			Statement::Assert(assert_stmt) => {
-				let value = self.eval_expr(model, &assert_stmt.expr, env)?;
-				if value.is_empty() {
-					let failure = model.blank();
-					model
-						.apply_to(failure, "wa2:type", "core:AssertFailure")
-						.map_err(|e| RuleError {
-							message: format!("assert failure creation failed: {:?}", e),
-						})?;
-					if let Expr::Var(name, _) = &assert_stmt.expr {
-						model
-							.apply_to(failure, "core:assertion", &format!("\"{}\"", name))
-							.ok();
-					}
+				let result = self.eval_expr(model, &assert_stmt.expr, env)?;
+				if !self.is_satisfied(&result) {
+					self.create_failure(model, rule_name, "assertion failed")?;
+				}
+			}
+
+			Statement::Must(must_stmt) => {
+				let result = self.eval_expr(model, &must_stmt.expr, env)?;
+				if !self.is_satisfied(&result) {
+					// Get context for better error message
+					let context = self.get_context_entity(env);
+					self.create_failure_with_context(
+						model,
+						rule_name,
+						"must obligation not satisfied",
+						context,
+					)?;
 				}
 			}
 		}
@@ -183,9 +182,71 @@ impl RuleEngine {
 		Ok(())
 	}
 
-	fn eval_expr(&self, model: &Model, expr: &Expr, env: &Env) -> Result<EvalResult, RuleError> {
+	/// Check if a result satisfies an obligation
+	fn is_satisfied(&self, result: &EvalResult) -> bool {
+		match result {
+			EvalResult::Set(ids) => !ids.is_empty(),
+			EvalResult::Entity(_) => true,
+			EvalResult::Literal(s) => !s.is_empty() && s != "false",
+			EvalResult::Empty => false,
+		}
+	}
+
+	/// Get the current context entity (e.g., the loop variable)
+	fn get_context_entity(&self, env: &Env) -> Option<EntityId> {
+		// Return the most recently bound entity variable
+		env.last_entity()
+	}
+
+	/// Create an assertion failure node
+	fn create_failure(
+		&mut self,
+		model: &mut Model,
+		rule_name: &str,
+		message: &str,
+	) -> Result<(), RuleError> {
+		self.create_failure_with_context(model, rule_name, message, None)
+	}
+
+	/// Create an assertion failure node with context
+	fn create_failure_with_context(
+		&mut self,
+		model: &mut Model,
+		rule_name: &str,
+		message: &str,
+		context: Option<EntityId>,
+	) -> Result<(), RuleError> {
+		let failure = model.blank();
+		model
+			.apply_to(failure, "wa2:type", "core:AssertFailure")
+			.map_err(|e| RuleError {
+				message: format!("failed to create failure node: {}", e),
+			})?;
+
+		let full_message = format!("{}: {}", rule_name, message);
+		model
+			.apply_literal(failure, "core:assertion", &full_message)
+			.map_err(|e| RuleError {
+				message: format!("failed to set assertion message: {}", e),
+			})?;
+
+		// Link to context entity if available
+		if let Some(entity) = context {
+			model
+				.apply_entity(failure, "core:subject", entity)
+				.map_err(|e| RuleError {
+					message: format!("failed to link failure to subject: {}", e),
+				})?;
+		}
+
+		Ok(())
+	}
+
+	fn eval_expr(&self, model: &mut Model, expr: &Expr, env: &Env) -> Result<EvalResult, RuleError> {
 		match expr {
-			Expr::Var(name, _) => env.get(name),
+			Expr::Var(name, _) => env.get(name).cloned().ok_or_else(|| RuleError {
+				message: format!("undefined variable: {}", name),
+			}),
 
 			Expr::Blank(_) => {
 				// Create a new blank node
@@ -201,11 +262,40 @@ impl RuleEngine {
 				Ok(EvalResult::Set(results))
 			}
 
-			Expr::Add(_) => {
-				// Add expressions need mutable model, handled specially
-				Err(RuleError {
-					message: "add expression in non-statement context".to_string(),
-				})
+			Expr::Add(add_expr) => {
+				let subject = self.eval_expr_to_entity(model, &add_expr.subject, env)?;
+				let pred_name = add_expr.predicate.to_string();
+				let object = self.eval_expr(model, &add_expr.object, env)?;
+
+				match object {
+					EvalResult::Entity(obj_id) => {
+						model
+							.apply_entity(subject, &pred_name, obj_id)
+							.map_err(|e| RuleError {
+								message: format!("failed to add statement: {}", e),
+							})?;
+					}
+					EvalResult::Literal(s) => {
+						model
+							.apply_literal(subject, &pred_name, &s)
+							.map_err(|e| RuleError {
+								message: format!("failed to add statement: {}", e),
+							})?;
+					}
+					EvalResult::Set(_) => {
+						return Err(RuleError {
+							message: "cannot use set as object".to_string(),
+						});
+					}
+					EvalResult::Empty => {
+						return Err(RuleError {
+							message: "cannot use empty as object".to_string(),
+						});
+					}
+				}
+
+				// Add expression returns the subject
+				Ok(EvalResult::Entity(subject))
 			}
 
 			Expr::QName(qname) => {
@@ -221,8 +311,8 @@ impl RuleEngine {
 
 			Expr::String(s, _) => Ok(EvalResult::Literal(s.clone())),
 
-         Expr::Bool(b, _) => Ok(EvalResult::Literal(b.to_string())),
-         
+			Expr::Bool(b, _) => Ok(EvalResult::Literal(b.to_string())),
+
 			Expr::Empty(inner, _) => {
 				let value = self.eval_expr(model, inner, env)?;
 				Ok(if value.is_empty() {
@@ -242,10 +332,13 @@ impl RuleEngine {
 	) -> Result<EntityId, RuleError> {
 		match expr {
 			Expr::Blank(_) => Ok(model.blank()),
-			Expr::Var(name, _) => match env.get(name)? {
-				EvalResult::Entity(id) => Ok(id),
-				_ => Err(RuleError {
-					message: format!("expected entity for {}", name),
+			Expr::Var(name, _) => match env.get(name) {
+				Some(EvalResult::Entity(id)) => Ok(*id),
+				Some(_) => Err(RuleError {
+					message: format!("variable '{}' is not an entity", name),
+				}),
+				None => Err(RuleError {
+					message: format!("undefined variable: {}", name),
 				}),
 			},
 			Expr::QName(qname) => {
@@ -327,9 +420,17 @@ impl Env {
 		self.bindings.insert(name, value);
 	}
 
-	pub fn get(&self, name: &str) -> Result<EvalResult, RuleError> {
-		self.bindings.get(name).cloned().ok_or_else(|| RuleError {
-			message: format!("unbound variable: {}", name),
-		})
+	pub fn get(&self, name: &str) -> Option<&EvalResult> {
+		self.bindings.get(name)
+	}
+
+	pub fn last_entity(&self) -> Option<EntityId> {
+		// Find any entity binding (most recent iteration variable)
+		for value in self.bindings.values() {
+			if let EvalResult::Entity(id) = value {
+				return Some(*id);
+			}
+		}
+		None
 	}
 }

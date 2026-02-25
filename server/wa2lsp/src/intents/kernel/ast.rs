@@ -21,6 +21,7 @@ pub enum Item {
 	Predicate(Predicate),
 	Instance(Instance),
 	Rule(Rule),
+	Policy(Policy),
 }
 
 /// Namespace block
@@ -144,6 +145,7 @@ pub enum Statement {
 	Add(AddStmt),
 	Iterate(IterateStmt),
 	Assert(AssertStmt),
+	Must(MustStmt),
 }
 
 /// Let binding: let x = ?(...)
@@ -175,6 +177,13 @@ pub struct IterateStmt {
 /// Assert statement: @#assert(expr)
 #[derive(Debug, Clone)]
 pub struct AssertStmt {
+	pub expr: Expr,
+	pub span: Span,
+}
+
+/// Must statement: must ?(expr)
+#[derive(Debug, Clone)]
+pub struct MustStmt {
 	pub expr: Expr,
 	pub span: Span,
 }
@@ -245,5 +254,29 @@ pub struct AddExpr {
 	pub subject: Expr,
 	pub predicate: QualifiedName,
 	pub object: Expr,
+	pub span: Span,
+}
+
+/// Modal verb for policy bindings
+#[derive(Debug, Clone, PartialEq)]
+pub enum Modal {
+	Must,
+	Should,
+	May,
+}
+
+/// Policy binding: modal + rule reference
+#[derive(Debug, Clone)]
+pub struct PolicyBinding {
+	pub modal: Modal,
+	pub rule_name: QualifiedName,
+	pub span: Span,
+}
+
+/// Policy declaration
+#[derive(Debug, Clone)]
+pub struct Policy {
+	pub name: String,
+	pub bindings: Vec<PolicyBinding>,
 	pub span: Span,
 }

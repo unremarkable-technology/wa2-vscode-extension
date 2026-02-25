@@ -14,6 +14,12 @@ pub struct Lower<'m> {
 	default_namespace: String,
 }
 
+/// Result of lowering AST
+pub struct LowerResult {
+	pub rules: Vec<Rule>,
+	pub policies: Vec<Policy>,
+}
+
 impl<'m> Lower<'m> {
 	pub fn new(model: &'m mut Model, default_namespace: &str) -> Result<Self, LowerError> {
 		if !default_namespace.is_empty() {
@@ -51,34 +57,36 @@ impl<'m> Lower<'m> {
 	}
 
 	/// Lower AST to model, returns rules for later execution
-	pub fn lower(&mut self, ast: &Ast) -> Result<Vec<Rule>, LowerError> {
+	pub fn lower(&mut self, ast: &Ast) -> Result<LowerResult, LowerError> {
 		let mut rules = Vec::new();
+		let mut policies = Vec::new();
 
 		for item in &ast.items {
-			self.lower_item(item, &mut rules)?;
+			self.lower_item(item, &mut rules, &mut policies)?;
 		}
 
-		Ok(rules)
+		Ok(LowerResult { rules, policies })
 	}
 
-	fn lower_item(&mut self, item: &Item, rules: &mut Vec<Rule>) -> Result<(), LowerError> {
+	fn lower_item(
+		&mut self,
+		item: &Item,
+		rules: &mut Vec<Rule>,
+		policies: &mut Vec<Policy>,
+	) -> Result<(), LowerError> {
 		match item {
 			Item::Namespace(ns) => {
-				// Push namespace onto stack (enables nesting)
 				self.namespace_stack.push(ns.name.clone());
 
-				// Create the namespace entity with fully qualified name
 				let fqn = self.namespace_stack.join(":");
 				self.model.ensure_namespace(&fqn).map_err(|e| LowerError {
 					message: format!("failed to create namespace '{}': {}", fqn, e),
 				})?;
 
-				// Lower items inside
 				for inner in &ns.items {
-					self.lower_item(inner, rules)?;
+					self.lower_item(inner, rules, policies)?;
 				}
 
-				// Pop when done
 				self.namespace_stack.pop();
 			}
 
@@ -99,7 +107,6 @@ impl<'m> Lower<'m> {
 						message: format!("failed to create struct '{}': {}", fqn, e),
 					})?;
 
-				// Fields become predicates
 				for field in &struct_decl.fields {
 					let field_fqn = self.qualify(&field.name);
 					self.model
@@ -118,9 +125,8 @@ impl<'m> Lower<'m> {
 						message: format!("failed to create enum '{}': {}", fqn, e),
 					})?;
 
-				// Variants are strings
 				for variant in &enum_decl.variants {
-					let variant_fqn = self.qualify(variant); // variant is already a String
+					let variant_fqn = self.qualify(variant);
 					self.model
 						.apply(&variant_fqn, "wa2:type", "wa2:Type")
 						.map_err(|e| LowerError {
@@ -145,7 +151,7 @@ impl<'m> Lower<'m> {
 
 			Item::Instance(inst) => {
 				let entity_name = &inst.name.to_string();
-				let type_name = &inst.ty.to_string(); // .ty not .type_name
+				let type_name = &inst.ty.to_string();
 				self.model
 					.apply(entity_name, "wa2:type", type_name)
 					.map_err(|e| LowerError {
@@ -154,11 +160,17 @@ impl<'m> Lower<'m> {
 			}
 
 			Item::Rule(rule) => {
-				// Clone rule and qualify its name with current namespace
 				let mut qualified_rule = rule.clone();
 				let qualified_name = self.qualify(&rule.name);
 				qualified_rule.name = qualified_name;
 				rules.push(qualified_rule);
+			}
+
+			Item::Policy(policy) => {
+				let mut qualified_policy = policy.clone();
+				let qualified_name = self.qualify(&policy.name);
+				qualified_policy.name = qualified_name;
+				policies.push(qualified_policy);
 			}
 		}
 
@@ -264,10 +276,10 @@ mod tests {
 		assert!(model.resolve("core:workload").is_none());
 
 		let mut lower = Lower::new(&mut model, "core").unwrap();
-		let rules = lower.lower(&ast).unwrap();
+		let result = lower.lower(&ast).unwrap();
 
-		// No rules in this snippet
-		assert!(rules.is_empty());
+      // No rules in this snippet
+      assert!(result.rules.is_empty());
 
 		eprintln!("{}", &model);
 		//panic!();

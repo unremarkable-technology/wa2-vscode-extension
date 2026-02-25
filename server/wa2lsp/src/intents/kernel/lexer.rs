@@ -16,7 +16,6 @@ pub struct LexerState {
 #[logos(extras = LexerState)]
 pub enum Token {
 	// Keywords
-	// Keywords
 	#[token("namespace")]
 	KwNamespace,
 	#[token("struct")]
@@ -39,6 +38,14 @@ pub enum Token {
 	KwTrue,
 	#[token("false")]
 	KwFalse,
+	#[token("policy")]
+	KwPolicy,
+	#[token("must")]
+	KwMust,
+	#[token("should")]
+	KwShould,
+	#[token("may")]
+	KwMay,
 
 	// Symbols
 	#[token("@")]

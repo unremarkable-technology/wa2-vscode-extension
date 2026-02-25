@@ -534,6 +534,17 @@ impl Model {
 		Ok(self.add_statement_raw(subject, predicate, object))
 	}
 
+	pub fn apply_literal(
+		&mut self,
+		subject: EntityId,
+		predicate: &str,
+		value: &str,
+	) -> Result<(), ModelError> {
+		let pred_id = self.ensure_entity(predicate)?;
+		self.add_statement_raw(subject, pred_id, Value::Literal(value.to_string()));
+		Ok(())
+	}
+
 	/// Parse object string into Value
 	fn parse_object(&mut self, object: &str) -> Result<Value, ModelError> {
 		// Literal string in quotes
