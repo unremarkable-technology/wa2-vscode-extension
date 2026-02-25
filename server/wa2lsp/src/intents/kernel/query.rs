@@ -45,6 +45,25 @@ impl QueryEngine {
 		Ok(current)
 	}
 
+	/// Execute a query path starting from specific entities
+	pub fn execute_from(
+		&self,
+		model: &Model,
+		start: &[EntityId],
+		path: &QueryPath,
+	) -> Result<Vec<EntityId>, RuleError> {
+		let mut current = start.to_vec();
+
+		for step in &path.steps {
+			current = self.execute_step(model, &current, step)?;
+			if current.is_empty() {
+				break;
+			}
+		}
+
+		Ok(current)
+	}
+
 	fn apply_filters(
 		&self,
 		model: &Model,

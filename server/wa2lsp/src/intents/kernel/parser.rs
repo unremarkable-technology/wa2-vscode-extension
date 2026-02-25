@@ -439,8 +439,71 @@ fn parse_must_stmt(p: &mut Parser) -> Result<MustStmt, ParseError> {
 	p.expect(Token::KwMust)?;
 	let expr = parse_expr(p)?;
 
+	// Optional metadata block
+	let metadata = if p.at(&Token::LBrace) {
+		Some(parse_must_metadata(p)?)
+	} else {
+		None
+	};
+
 	Ok(MustStmt {
 		expr,
+		metadata,
+		span: start..p.span.end,
+	})
+}
+
+fn parse_must_metadata(p: &mut Parser) -> Result<MustMetadata, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::LBrace)?;
+
+	let mut subject = None;
+	let mut area = None;
+	let mut message = None;
+
+	while !p.at(&Token::RBrace) {
+		let field_name = p.expect_ident()?;
+		p.expect(Token::Colon)?;
+
+		match field_name.as_str() {
+			"subject" => {
+				subject = Some(parse_expr(p)?);
+			}
+			"area" => {
+				area = Some(parse_qualified_name(p)?);
+			}
+			"message" => match &p.current {
+				Some(Token::StringLiteral(s)) => {
+					message = Some(s.clone());
+					p.advance();
+				}
+				other => {
+					return Err(ParseError {
+						message: format!("expected string for message, got {:?}", other),
+						span: p.span.clone(),
+					});
+				}
+			},
+			other => {
+				return Err(ParseError {
+					message: format!("unknown must metadata field: {}", other),
+					span: p.span.clone(),
+				});
+			}
+		}
+
+		// Optional comma between fields
+		if p.at(&Token::Comma) {
+			p.advance();
+		}
+	}
+
+	p.expect(Token::RBrace)?;
+
+	Ok(MustMetadata {
+		subject,
+		area,
+		message,
 		span: start..p.span.end,
 	})
 }

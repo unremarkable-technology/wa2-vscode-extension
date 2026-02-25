@@ -153,7 +153,6 @@ impl CoreEngine {
 			None => return vec![],
 		};
 
-		// Use Kernel for analysis
 		let result = match self.kernel.analyse(
 			&doc.text,
 			uri,
@@ -169,14 +168,55 @@ impl CoreEngine {
 			.failures
 			.into_iter()
 			.filter_map(|failure| {
-				let range = result.model.get_range(failure.entity)?;
+				// Get range from subject if available, else from failure entity
+				let range = failure
+					.subject
+					.and_then(|s| result.model.get_range(s))
+					.or_else(|| result.model.get_range(failure.entity))?;
+
+				// Map severity
+				let severity = if failure.severity.contains("Error") {
+					DiagnosticSeverity::ERROR
+				} else if failure.severity.contains("Warning") {
+					DiagnosticSeverity::WARNING
+				} else {
+					DiagnosticSeverity::INFORMATION
+				};
+
+				// Build message
+				let message = failure
+					.message
+					.clone()
+					.unwrap_or_else(|| failure.assertion.clone());
+
+				// Build rich data for hover
+				let mut data = serde_json::Map::new();
+				data.insert("kind".to_string(), serde_json::json!("wa2_guide"));
+
+				if let Some(msg) = &failure.message {
+					data.insert("message".to_string(), serde_json::json!(msg));
+				}
+
+				// Pull education from area's @#doc annotations
+				if let Some(area_id) = failure.area {
+					let area_name = result.model.qualified_name(area_id);
+					data.insert("area".to_string(), serde_json::json!(area_name));
+
+					if let Some(tldr) = result.model.get_literal(area_id, "wa2:tldr") {
+						data.insert("tldr".to_string(), serde_json::json!(tldr));
+					}
+					if let Some(why) = result.model.get_literal(area_id, "wa2:why") {
+						data.insert("why".to_string(), serde_json::json!(why));
+					}
+				}
 
 				Some(Diagnostic {
 					range,
-					severity: Some(DiagnosticSeverity::ERROR),
+					severity: Some(severity),
 					code: Some(NumberOrString::String("WA2_ASSERT".into())),
 					source: Some("wa2".into()),
-					message: format!("Assertion failed: {}", failure.assertion),
+					message,
+					data: Some(serde_json::Value::Object(data)),
 					..Default::default()
 				})
 			})

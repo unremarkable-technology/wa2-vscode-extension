@@ -178,18 +178,103 @@ impl RuleEngine {
 			Statement::Must(must_stmt) => {
 				let result = self.eval_expr(model, &must_stmt.expr, env)?;
 				if !self.is_satisfied(&result) {
-					let context = self.get_context_entity(env);
 					let modal = self.current_modal.unwrap_or(Modal::Must);
-					self.create_failure_with_severity(
-						model,
-						rule_name,
-						"must obligation not satisfied",
-						context,
-						modal,
-					)?;
+
+					// Get subject from metadata or fall back to context
+					let subject = if let Some(ref meta) = must_stmt.metadata {
+						if let Some(ref subj_expr) = meta.subject {
+							Some(self.eval_expr_to_entity(model, subj_expr, env)?)
+						} else {
+							self.get_context_entity(env)
+						}
+					} else {
+						self.get_context_entity(env)
+					};
+
+					// Get area entity if specified
+					let area = if let Some(ref meta) = must_stmt.metadata {
+						if let Some(ref area_name) = meta.area {
+							model.resolve(&area_name.to_string())
+						} else {
+							None
+						}
+					} else {
+						None
+					};
+
+					// Get message if specified
+					let message = must_stmt.metadata.as_ref().and_then(|m| m.message.clone());
+
+					self.create_rich_failure(model, rule_name, subject, area, message, modal)?;
 				}
 			}
 		}
+
+		Ok(())
+	}
+
+	fn create_rich_failure(
+		&mut self,
+		model: &mut Model,
+		rule_name: &str,
+		subject: Option<EntityId>,
+		area: Option<EntityId>,
+		message: Option<String>,
+		modal: Modal,
+	) -> Result<(), RuleError> {
+		let failure = model.blank();
+		model
+			.apply_to(failure, "wa2:type", "core:AssertFailure")
+			.map_err(|e| RuleError {
+				message: format!("failed to create failure node: {}", e),
+			})?;
+
+		// Assertion text (rule name)
+		let assertion_text = format!("{}: must obligation not satisfied", rule_name);
+		model
+			.apply_literal(failure, "core:assertion", &assertion_text)
+			.map_err(|e| RuleError {
+				message: format!("failed to set assertion: {}", e),
+			})?;
+
+		// Subject (link to entity)
+		if let Some(subj) = subject {
+			model
+				.apply_entity(failure, "core:subject", subj)
+				.map_err(|e| RuleError {
+					message: format!("failed to set subject: {}", e),
+				})?;
+		}
+
+		// Area (link to entity for education content)
+		if let Some(area_id) = area {
+			model
+				.apply_entity(failure, "core:area", area_id)
+				.map_err(|e| RuleError {
+					message: format!("failed to set area: {}", e),
+				})?;
+		}
+
+		// Message (user action string)
+		if let Some(msg) = message {
+			model
+				.apply_literal(failure, "core:message", &msg)
+				.map_err(|e| RuleError {
+					message: format!("failed to set message: {}", e),
+				})?;
+		}
+
+		// Modal (as entity reference)
+		let modal_name = match modal {
+			Modal::Must => "core:Error",
+			Modal::Should => "core:Warning",
+			Modal::May => "core:Info",
+		};
+		model
+			.apply_to(failure, "core:severity", modal_name)
+			.map_err(|e| RuleError {
+				message: format!("failed to set severity: {}", e),
+			})?;
 
 		Ok(())
 	}
@@ -275,6 +360,46 @@ impl RuleEngine {
 
 			Expr::Query(query) => {
 				let engine = QueryEngine::new();
+
+				// Check if the first step is a variable reference
+				if let Some(first_step) = query.path.steps.first() {
+					if let Some(ref node_test) = first_step.node_test {
+						let var_name = &node_test.name;
+						// Check if this is a variable in the environment (no namespace = likely variable)
+						if node_test.namespace.is_none() {
+							if let Some(result) = env.get(var_name) {
+								// Get the starting entity from the variable
+								let start_entities = match result {
+									EvalResult::Entity(id) => vec![*id],
+									EvalResult::Set(ids) => ids.clone(),
+									_ => vec![],
+								};
+
+								if !start_entities.is_empty() {
+									// Execute remaining steps from this entity
+									let remaining_path = QueryPath {
+										steps: query.path.steps[1..].to_vec(),
+										span: query.path.span.clone(),
+									};
+
+									if remaining_path.steps.is_empty() {
+										// Just the variable, return its value
+										return Ok(EvalResult::Set(start_entities));
+									}
+
+									let results = engine.execute_from(
+										model,
+										&start_entities,
+										&remaining_path,
+									)?;
+									return Ok(EvalResult::Set(results));
+								}
+							}
+						}
+					}
+				}
+
+				// No variable prefix, execute normally
 				let results = engine.execute(model, &query.path)?;
 				Ok(EvalResult::Set(results))
 			}
@@ -348,9 +473,16 @@ impl RuleEngine {
 		env: &Env,
 	) -> Result<EntityId, RuleError> {
 		match expr {
-			Expr::Blank(_) => Ok(model.blank()),
 			Expr::Var(name, _) => match env.get(name) {
 				Some(EvalResult::Entity(id)) => Ok(*id),
+				Some(EvalResult::Set(ids)) if ids.len() == 1 => Ok(ids[0]),
+				Some(EvalResult::Set(ids)) => Err(RuleError {
+					message: format!(
+						"variable '{}' is a set with {} elements, expected single entity",
+						name,
+						ids.len()
+					),
+				}),
 				Some(_) => Err(RuleError {
 					message: format!("variable '{}' is not an entity", name),
 				}),
@@ -358,45 +490,65 @@ impl RuleEngine {
 					message: format!("undefined variable: {}", name),
 				}),
 			},
+			Expr::Blank(_) => {
+				let id = model.blank();
+				Ok(id)
+			}
+			Expr::Query(query) => {
+				let engine = QueryEngine::new();
+				let results = engine.execute(model, &query.path)?;
+				match results.len() {
+					1 => Ok(results[0]),
+					0 => Err(RuleError {
+						message: "query returned no results, expected single entity".to_string(),
+					}),
+					n => Err(RuleError {
+						message: format!("query returned {} results, expected single entity", n),
+					}),
+				}
+			}
 			Expr::QName(qname) => {
 				let name = qname.to_string();
-				model.ensure_entity(&name).map_err(|e| RuleError {
-					message: format!("failed to resolve '{}': {}", name, e),
+				model.resolve(&name).ok_or_else(|| RuleError {
+					message: format!("unresolved name: {}", name),
 				})
 			}
 			Expr::Add(add_expr) => {
-				// Execute the add and return the subject
 				let subject = self.eval_expr_to_entity(model, &add_expr.subject, env)?;
-				let predicate = &add_expr.predicate.to_string();
+				let pred_name = add_expr.predicate.to_string();
 				let object = self.eval_expr(model, &add_expr.object, env)?;
 
 				match object {
 					EvalResult::Entity(obj_id) => {
 						model
-							.apply_entity(subject, predicate, obj_id)
+							.apply_entity(subject, &pred_name, obj_id)
 							.map_err(|e| RuleError {
-								message: format!("add failed: {:?}", e),
+								message: format!("failed to add statement: {}", e),
 							})?;
 					}
 					EvalResult::Literal(s) => {
 						model
-							.apply_to(subject, predicate, &format!("\"{}\"", s))
+							.apply_literal(subject, &pred_name, &s)
 							.map_err(|e| RuleError {
-								message: format!("add failed: {:?}", e),
+								message: format!("failed to add statement: {}", e),
 							})?;
 					}
 					EvalResult::Set(_) => {
 						return Err(RuleError {
-							message: "cannot use set as object in add".to_string(),
+							message: "cannot use set as object".to_string(),
 						});
 					}
-					EvalResult::Empty => {}
+					EvalResult::Empty => {
+						return Err(RuleError {
+							message: "cannot use empty as object".to_string(),
+						});
+					}
 				}
 
 				Ok(subject)
 			}
 			_ => Err(RuleError {
-				message: "expected entity expression".to_string(),
+				message: format!("expression cannot be converted to entity: {:?}", expr),
 			}),
 		}
 	}

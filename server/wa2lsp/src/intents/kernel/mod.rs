@@ -33,6 +33,8 @@ pub struct AssertFailure {
 	pub assertion: String,
 	pub severity: String,
 	pub subject: Option<crate::intents::model::EntityId>,
+	pub area: Option<crate::intents::model::EntityId>,
+	pub message: Option<String>,
 }
 
 /// Kernel - the WA2 analysis engine
@@ -143,29 +145,40 @@ impl Kernel {
 		let mut failures = Vec::new();
 
 		if let Some(failure_type) = model.resolve("core:AssertFailure") {
+			let subject_pred = model.resolve("core:subject");
+			let area_pred = model.resolve("core:area");
+			let severity_pred = model.resolve("core:severity");
+
 			for i in 0..model.entity_count() {
 				let entity = crate::intents::model::EntityId(i as u32);
 				if model.has_type(entity, failure_type) {
 					let assertion = model
 						.get_literal(entity, "core:assertion")
 						.unwrap_or_default();
-					let severity = model
-						.get_literal(entity, "core:severity")
+
+					let severity = severity_pred
+						.and_then(|p| model.get(entity, p))
+						.and_then(|v| v.as_entity())
+						.map(|e| model.qualified_name(e))
 						.unwrap_or_else(|| "error".to_string());
-					let subject = model.get_literal(entity, "core:subject").and_then(|_| {
-						// Get as entity, not literal
-						if let Some(subj_pred) = model.resolve("core:subject") {
-							model.get(entity, subj_pred).and_then(|v| v.as_entity())
-						} else {
-							None
-						}
-					});
+
+					let subject = subject_pred
+						.and_then(|p| model.get(entity, p))
+						.and_then(|v| v.as_entity());
+
+					let area = area_pred
+						.and_then(|p| model.get(entity, p))
+						.and_then(|v| v.as_entity());
+
+					let message = model.get_literal(entity, "core:message");
 
 					failures.push(AssertFailure {
 						entity,
 						assertion,
 						severity,
 						subject,
+						area,
+						message,
 					});
 				}
 			}

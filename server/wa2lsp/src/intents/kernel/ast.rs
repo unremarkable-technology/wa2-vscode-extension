@@ -181,10 +181,20 @@ pub struct AssertStmt {
 	pub span: Span,
 }
 
-/// Must statement: must ?(expr)
+/// Must statement: must ?(expr) or must ?(expr) { subject: x, area: Y, message: "..." }
 #[derive(Debug, Clone)]
 pub struct MustStmt {
 	pub expr: Expr,
+	pub metadata: Option<MustMetadata>,
+	pub span: Span,
+}
+
+/// Metadata block for must statement
+#[derive(Debug, Clone)]
+pub struct MustMetadata {
+	pub subject: Option<Expr>,
+	pub area: Option<QualifiedName>,
+	pub message: Option<String>,
 	pub span: Span,
 }
 
