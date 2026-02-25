@@ -18,6 +18,7 @@ pub struct RuleEngine {
 	max_iterations: usize,
 	/// Tracks (rule_name, reference_binding) combinations already processed
 	processed: HashSet<(String, ReferenceBinding)>,
+	current_modal: Option<Modal>,
 }
 
 impl Default for RuleEngine {
@@ -31,18 +32,28 @@ impl RuleEngine {
 		Self {
 			max_iterations: 100,
 			processed: HashSet::new(),
+			current_modal: None,
 		}
 	}
 
-	/// Run rules to fixed-point
 	pub fn run(&mut self, model: &mut Model, rules: &[Rule]) -> Result<(), RuleError> {
-		// Clear processed set for fresh run
+		self.run_with_modals(model, rules, &HashMap::new())
+	}
+
+	pub fn run_with_modals(
+		&mut self,
+		model: &mut Model,
+		rules: &[Rule],
+		rule_modals: &HashMap<String, Modal>,
+	) -> Result<(), RuleError> {
 		self.processed.clear();
 
 		for _ in 0..self.max_iterations {
 			let initial_count = model.statement_count();
 
 			for rule in rules {
+				// Set current modal for this rule
+				self.current_modal = rule_modals.get(&rule.name).copied();
 				self.execute_rule(model, rule)?;
 			}
 
@@ -167,13 +178,14 @@ impl RuleEngine {
 			Statement::Must(must_stmt) => {
 				let result = self.eval_expr(model, &must_stmt.expr, env)?;
 				if !self.is_satisfied(&result) {
-					// Get context for better error message
 					let context = self.get_context_entity(env);
-					self.create_failure_with_context(
+					let modal = self.current_modal.unwrap_or(Modal::Must);
+					self.create_failure_with_severity(
 						model,
 						rule_name,
 						"must obligation not satisfied",
 						context,
+						modal,
 					)?;
 				}
 			}
@@ -242,7 +254,12 @@ impl RuleEngine {
 		Ok(())
 	}
 
-	fn eval_expr(&self, model: &mut Model, expr: &Expr, env: &Env) -> Result<EvalResult, RuleError> {
+	fn eval_expr(
+		&self,
+		model: &mut Model,
+		expr: &Expr,
+		env: &Env,
+	) -> Result<EvalResult, RuleError> {
 		match expr {
 			Expr::Var(name, _) => env.get(name).cloned().ok_or_else(|| RuleError {
 				message: format!("undefined variable: {}", name),
@@ -382,6 +399,55 @@ impl RuleEngine {
 				message: "expected entity expression".to_string(),
 			}),
 		}
+	}
+
+	fn modal_to_severity(modal: Modal) -> &'static str {
+		match modal {
+			Modal::Must => "error",
+			Modal::Should => "warning",
+			Modal::May => "info",
+		}
+	}
+
+	fn create_failure_with_severity(
+		&mut self,
+		model: &mut Model,
+		rule_name: &str,
+		message: &str,
+		context: Option<EntityId>,
+		modal: Modal,
+	) -> Result<(), RuleError> {
+		let failure = model.blank();
+		model
+			.apply_to(failure, "wa2:type", "core:AssertFailure")
+			.map_err(|e| RuleError {
+				message: format!("failed to create failure node: {}", e),
+			})?;
+
+		let full_message = format!("{}: {}", rule_name, message);
+		model
+			.apply_literal(failure, "core:assertion", &full_message)
+			.map_err(|e| RuleError {
+				message: format!("failed to set assertion message: {}", e),
+			})?;
+
+		// Set severity based on modal
+		let severity = Self::modal_to_severity(modal);
+		model
+			.apply_literal(failure, "core:severity", severity)
+			.map_err(|e| RuleError {
+				message: format!("failed to set severity: {}", e),
+			})?;
+
+		if let Some(entity) = context {
+			model
+				.apply_entity(failure, "core:subject", entity)
+				.map_err(|e| RuleError {
+					message: format!("failed to link failure to subject: {}", e),
+				})?;
+		}
+
+		Ok(())
 	}
 }
 

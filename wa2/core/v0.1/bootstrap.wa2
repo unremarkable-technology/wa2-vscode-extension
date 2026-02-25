@@ -27,6 +27,8 @@ namespace core {
 	// Predicates
 	predicate source
 	predicate value
+	predicate severity
+	predicate subject	
 }
 
 namespace aws {
@@ -151,13 +153,13 @@ rule ensure_critical_stores_are_protected {
 // the framework can require data protection for critical stores
 // without understanding tagging, CFN, AWS Services, or S3 replication.
 
-//enum DataCriticalityTagging {
-//	MissionCritical,   // existential / legal / safety impact
-//	BusinessCritical,  // major financial or operational impact
-//	Important,         // painful but survivable
-//	NonCritical,       // inconvenience only
-//	Disposable         // safe to lose
-//}
+enum DataCriticalityTagging {
+	MissionCritical,   // existential / legal / safety impact
+	BusinessCritical,  // major financial or operational impact
+	Important,         // painful but survivable
+	NonCritical,       // inconvenience only
+	Disposable         // safe to lose
+}
 //
 //rule evaluate_aws_cfn_stores {
 //	let cfn_resources = ?(//cfn:Resource)

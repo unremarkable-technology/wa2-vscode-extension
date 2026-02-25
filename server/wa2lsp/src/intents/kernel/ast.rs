@@ -258,7 +258,7 @@ pub struct AddExpr {
 }
 
 /// Modal verb for policy bindings
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Modal {
 	Must,
 	Should,

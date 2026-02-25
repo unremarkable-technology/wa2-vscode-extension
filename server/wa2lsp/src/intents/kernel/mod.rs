@@ -7,10 +7,12 @@ mod parser;
 mod query;
 mod rules;
 
+use std::collections::HashMap;
+
 use tower_lsp::lsp_types::Diagnostic;
 use url::Url;
 
-use crate::intents::kernel::ast::{Policy, Rule};
+use crate::intents::kernel::ast::{Modal, Policy, Rule};
 use crate::intents::model::Model;
 use crate::intents::vendor::{DocumentFormat, Method, Vendor, get_projector};
 
@@ -29,6 +31,8 @@ pub struct AnalysisResult {
 pub struct AssertFailure {
 	pub entity: crate::intents::model::EntityId,
 	pub assertion: String,
+	pub severity: String,
+	pub subject: Option<crate::intents::model::EntityId>,
 }
 
 /// Kernel - the WA2 analysis engine
@@ -81,7 +85,33 @@ impl Kernel {
 		}
 	}
 
-	/// Analyze a document, returning model and failures
+	/// Build a map from rule name to its modal (from policy bindings)
+	fn build_rule_modals(&self) -> HashMap<String, Modal> {
+		let mut modals = HashMap::new();
+		for policy in &self.policies {
+			for binding in &policy.bindings {
+				let rule_name = binding.rule_name.to_string();
+				// If rule appears in multiple policies, use strictest modal
+				let new_modal = binding.modal;
+				modals
+					.entry(rule_name)
+					.and_modify(|existing| {
+						*existing = Self::stricter_modal(*existing, new_modal);
+					})
+					.or_insert(new_modal);
+			}
+		}
+		modals
+	}
+
+	fn stricter_modal(a: Modal, b: Modal) -> Modal {
+		match (a, b) {
+			(Modal::Must, _) | (_, Modal::Must) => Modal::Must,
+			(Modal::Should, _) | (_, Modal::Should) => Modal::Should,
+			_ => Modal::May,
+		}
+	}
+
 	pub fn analyse(
 		&self,
 		text: &str,
@@ -92,23 +122,21 @@ impl Kernel {
 	) -> Result<AnalysisResult, Vec<Diagnostic>> {
 		let mut model = self.model.clone();
 		let rules = self.rules.clone();
-		let policies = self.policies.clone();
 
 		let projector = get_projector(vendor, method);
 		projector.project_into(&mut model, text, uri, format)?;
 
+		// Build rule→modal map from policies
+		let rule_modals = self.build_rule_modals();
+
 		let mut engine = RuleEngine::new();
 		engine
-			.run(&mut model, &rules)
+			.run_with_modals(&mut model, &rules, &rule_modals)
 			.map_err(|e| vec![Kernel::rule_error_to_diagnostic(&e)])?;
 
 		let failures = self.collect_failures(&model);
 
-		Ok(AnalysisResult {
-			model,
-			failures,
-			// Could add: policies_evaluated: policies,
-		})
+		Ok(AnalysisResult { model, failures })
 	}
 
 	fn collect_failures(&self, model: &Model) -> Vec<AssertFailure> {
@@ -121,7 +149,24 @@ impl Kernel {
 					let assertion = model
 						.get_literal(entity, "core:assertion")
 						.unwrap_or_default();
-					failures.push(AssertFailure { entity, assertion });
+					let severity = model
+						.get_literal(entity, "core:severity")
+						.unwrap_or_else(|| "error".to_string());
+					let subject = model.get_literal(entity, "core:subject").and_then(|_| {
+						// Get as entity, not literal
+						if let Some(subj_pred) = model.resolve("core:subject") {
+							model.get(entity, subj_pred).and_then(|v| v.as_entity())
+						} else {
+							None
+						}
+					});
+
+					failures.push(AssertFailure {
+						entity,
+						assertion,
+						severity,
+						subject,
+					});
 				}
 			}
 		}
