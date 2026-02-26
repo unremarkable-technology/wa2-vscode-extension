@@ -173,8 +173,8 @@ impl RuleEngine {
 				Ok(StmtResult::Continue)
 			}
 
-			Statement::Iterate(iter_stmt) => {
-				let collection = self.eval_expr(model, &iter_stmt.collection, env)?;
+			Statement::For(for_stmt) => {
+				let collection = self.eval_expr(model, &for_stmt.collection, env)?;
 				let entities = match collection {
 					EvalResult::Set(ids) => ids,
 					EvalResult::Entity(id) => vec![id],
@@ -183,7 +183,7 @@ impl RuleEngine {
 
 				for entity in entities {
 					let mut new_binding = reference_binding.clone();
-					new_binding.push((iter_stmt.var.clone(), entity));
+					new_binding.push((for_stmt.var.clone(), entity));
 
 					let key = (rule_name.to_string(), new_binding.clone());
 					if self.processed.contains(&key) {
@@ -192,14 +192,30 @@ impl RuleEngine {
 					self.processed.insert(key);
 
 					let mut inner_env = env.clone();
-					inner_env.bind(iter_stmt.var.clone(), EvalResult::Entity(entity));
+					inner_env.bind(for_stmt.var.clone(), EvalResult::Entity(entity));
 					self.execute_statements(
 						model,
-						&iter_stmt.body,
+						&for_stmt.body,
 						&mut inner_env,
 						rule_name,
 						&new_binding,
 					)?;
+				}
+				Ok(StmtResult::Continue)
+			}
+
+			Statement::If(if_stmt) => {
+				let cond = self.eval_expr(model, &if_stmt.condition, env)?;
+				if self.is_satisfied(&cond) {
+					self.execute_statements(
+						model,
+						&if_stmt.then_body,
+						env,
+						rule_name,
+						reference_binding,
+					)?;
+				} else if let Some(ref else_body) = if_stmt.else_body {
+					self.execute_statements(model, else_body, env, rule_name, reference_binding)?;
 				}
 				Ok(StmtResult::Continue)
 			}
@@ -395,13 +411,9 @@ impl RuleEngine {
 				message: format!("undefined variable: {}", name),
 			}),
 
-			Expr::Blank(_) => {
-				// Create a new blank node
-				// Note: this requires mutable model, we'll handle this specially
-				Err(RuleError {
-					message: "blank node in eval context - should be handled in add".to_string(),
-				})
-			}
+			Expr::Blank(_) => Err(RuleError {
+				message: "blank node in eval context - should be handled in add".to_string(),
+			}),
 
 			Expr::Query(query) => {
 				let engine = QueryEngine::new();
@@ -412,7 +424,6 @@ impl RuleEngine {
 						if first_step.predicates.is_empty() {
 							if let Some(ref node_test) = first_step.node_test {
 								if node_test.namespace.is_none() {
-									// This is ?(var) - just return the variable's value
 									if let Some(result) = env.get(&node_test.name) {
 										return Ok(result.clone());
 									}
@@ -426,10 +437,8 @@ impl RuleEngine {
 				if let Some(first_step) = query.path.steps.first() {
 					if let Some(ref node_test) = first_step.node_test {
 						let var_name = &node_test.name;
-						// Check if this is a variable in the environment (no namespace = likely variable)
 						if node_test.namespace.is_none() {
 							if let Some(result) = env.get(var_name) {
-								// Get the starting entity from the variable
 								let start_entities = match result {
 									EvalResult::Entity(id) => vec![*id],
 									EvalResult::Set(ids) => ids.clone(),
@@ -437,14 +446,12 @@ impl RuleEngine {
 								};
 
 								if !start_entities.is_empty() {
-									// Execute remaining steps from this entity
 									let remaining_path = QueryPath {
 										steps: query.path.steps[1..].to_vec(),
 										span: query.path.span.clone(),
 									};
 
 									if remaining_path.steps.is_empty() {
-										// Just the variable, return its value
 										return Ok(EvalResult::Set(start_entities));
 									}
 
@@ -460,7 +467,6 @@ impl RuleEngine {
 					}
 				}
 
-				// No variable prefix, execute normally
 				let results = engine.execute(model, &query.path)?;
 				Ok(EvalResult::Set(results))
 			}
@@ -497,7 +503,6 @@ impl RuleEngine {
 					}
 				}
 
-				// Add expression returns the subject
 				Ok(EvalResult::Entity(subject))
 			}
 
@@ -522,6 +527,53 @@ impl RuleEngine {
 					EvalResult::Literal("true".to_string())
 				} else {
 					EvalResult::Empty
+				})
+			}
+
+			Expr::Match(match_expr) => {
+				let value = self.eval_expr(model, &match_expr.value, env)?;
+
+				let value_str = match &value {
+					EvalResult::Literal(s) => s.clone(),
+					EvalResult::Entity(_) => {
+						return Err(RuleError {
+							message: "match on entity not yet supported, use literal value"
+								.to_string(),
+						});
+					}
+					EvalResult::Set(_) => {
+						return Err(RuleError {
+							message: "match value must be a single value, not a set".to_string(),
+						});
+					}
+					EvalResult::Empty => {
+						return Err(RuleError {
+							message: "match value is empty".to_string(),
+						});
+					}
+				};
+
+				// If there's an as() clause, could validate against enum type
+				// For now we proceed directly to matching
+
+				for arm in &match_expr.arms {
+					let matches = arm.patterns.iter().any(|pattern| {
+						match pattern {
+							MatchPattern::Wildcard => true,
+							MatchPattern::Variant(name) => {
+								// Match against the value directly
+								&value_str == name
+							}
+						}
+					});
+
+					if matches {
+						return self.eval_expr(model, &arm.result, env);
+					}
+				}
+
+				Err(RuleError {
+					message: format!("no matching arm for value: {}", value_str),
 				})
 			}
 		}

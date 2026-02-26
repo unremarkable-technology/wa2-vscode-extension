@@ -58,43 +58,43 @@ namespace aws {
 		predicate outputs
 
 		rule derive_stores {
-			let cfn_stores = ?(cfn:Resource[aws:type in (
+			let cfn_stores = query(cfn:Resource[aws:type in (
 				"AWS::S3::Bucket",
 				"AWS::EC2::Volume",
 				"AWS::EFS::FileSystem"
 			)])
 
-			*(s in cfn_stores, {
-				let node = +(_, wa2:type, core:Store)
-				+(node, core:source, s)
-				+(core:workload, wa2:contains, node)
-			})
+			for s in cfn_stores {
+				let node = add(_, wa2:type, core:Store)
+				add(node, core:source, s)
+				add(core:workload, wa2:contains, node)
+			}
 		}
 
 		rule derive_runs {
-			let cfn_runs = ?(cfn:Resource[aws:type in (
+			let cfn_runs = query(cfn:Resource[aws:type in (
 				"AWS::EC2::Instance",
 				"AWS::Lambda::Function"
 			)])
 
-			*(r in cfn_runs, {
-				let node = +(_, wa2:type, core:Run)
-				+(node, core:source, r)
-				+(core:workload, wa2:contains, node)
-			})
+			for r in cfn_runs {
+				let node = add(_, wa2:type, core:Run)
+				add(node, core:source, r)
+				add(core:workload, wa2:contains, node)
+			}
 		}
 
 		rule derive_moves {
-			let cfn_moves = ?(cfn:Resource[aws:type in (
+			let cfn_moves = query(cfn:Resource[aws:type in (
 				"AWS::SQS::Queue",
 				"AWS::Kinesis::Stream"
 			)])
 
-			*(m in cfn_moves, {
-				let node = +(_, wa2:type, core:Move)
-				+(node, core:source, m)
-				+(core:workload, wa2:contains, node)
-			})
+			for m in cfn_moves {
+				let node = add(_, wa2:type, core:Move)
+				add(node, core:source, m)
+				add(core:workload, wa2:contains, node)
+			}
 		}
 	}
 }
@@ -142,27 +142,27 @@ policy protect_critical_data {
 }
 
 rule express_intent_store_criticality {
-	let scope = ?(core:Store)
+	let scope = query(core:Store)
 
-	*(store in scope, {
-		must ?(store/core:Evidence/data:Criticality) {
+	for store in scope {
+		must query(store/core:Evidence/data:Criticality) {
 			subject: store,
 			area: data:Criticality,
 			message: "Stores need to have criticality classification"
 		}
-	})
+	}
 }
 
 rule ensure_critical_stores_are_protected {
-	let scope = ?(core:Store[core:Evidence/data:isCritical])
+	let scope = query(core:Store[core:Evidence/data:isCritical])
 
-	*(store in scope, {
-		must ?(store/core:Evidence/data:isResilient) {
+	for store in scope {
+		must query(store/core:Evidence/data:isResilient) {
 			subject: store,
 			area: data:isResilient,
 			message: "Critical stores need to be protected from loss"
 		}
-	})
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -194,45 +194,46 @@ namespace my {
 	}
 
 	rule evidence_store_sensitivity_aws_cfn_tagging {
-		let stores = ?(core:Store)
+		let stores = query(core:Store)
 
-		*(store in stores, {
-			let source = ?(store/core:source)
+		for store in stores {
+			let source = query(store/core:source)
 			
-			must ?(source/aws:Tags/*[aws:Key = "DataSensitivity"]) {
+			must query(source/aws:Tags/*[aws:Key = "DataSensitivity"]) {
 				subject: source,
 				area: my:DataSensitivity,
 				message: "Add a DataSensitivity tag to this resource"
 			}
 
-			let evidence = +(_, wa2:type, core:Evidence)
-			+(store, wa2:contains, evidence)
-			let fact = +(_, wa2:type, data:Sensitivity)
-			+(evidence, wa2:contains, fact)
-		})
+			// chain(chain(store, core:Evidence), data:Sensitivity)
+			let evidence = add(_, wa2:type, core:Evidence)
+			add(store, wa2:contains, evidence)
+			let fact = add(_, wa2:type, data:Sensitivity)
+			add(evidence, wa2:contains, fact)
+		}
 	}
 
 	rule evidence_store_criticality_aws_cfn_tagging {
-		let stores = ?(core:Store)
+		let stores = query(core:Store)
 
-		*(store in stores, {
-			let source = ?(store/core:source)
-			
-			must ?(source/aws:Tags/*[aws:Key = "DataCriticality"]) {
+		for store in stores {
+			let source = query(store/core:source)
+
+			must query(source/aws:Tags/*[aws:Key = "DataCriticality"]) {
 				subject: source,
 				area: my:DataCriticality,
 				message: "Add a DataCriticality tag to this resource"
 			}
 
-			let evidence = +(_, wa2:type, core:Evidence)
-			+(store, wa2:contains, evidence)
-			let fact = +(_, wa2:type, data:Criticality)
-			+(evidence, wa2:contains, fact)
-		})
+			let evidence = add(_, wa2:type, core:Evidence)
+			add(store, wa2:contains, evidence)
+			let fact = add(_, wa2:type, data:Criticality)
+			add(evidence, wa2:contains, fact)
+		}
 	}
 
 	rule evidence_store_resilience_aws_cfn_s3 {
-		let replicated_stores = ?(cfn:Resource[aws:type = "AWS::S3::Bucket"][
+		let replicated_stores = query(cfn:Resource[aws:type = "AWS::S3::Bucket"][
 			aws:VersioningConfiguration/aws:Status = "Enabled"
 		][
 			aws:ReplicationConfiguration/aws:Role
@@ -240,12 +241,12 @@ namespace my {
 			aws:ReplicationConfiguration/aws:Rules/*/aws:Status = "Enabled"
 		]/core:Store)
 
-		*(store in replicated_stores, {
-			let evidence = +(_, wa2:type, core:Evidence)
-			+(store, wa2:contains, evidence)
+		for store in replicated_stores {
+			let evidence = add(_, wa2:type, core:Evidence)
+			add(store, wa2:contains, evidence)
 
-			let fact = +(_, wa2:type, data:isResilient)
-			+(evidence, wa2:contains, fact)
-		})
+			let fact = add(_, wa2:type, data:isResilient)
+			add(evidence, wa2:contains, fact)
+		}
 	}
 }

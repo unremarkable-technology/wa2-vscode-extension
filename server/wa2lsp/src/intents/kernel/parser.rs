@@ -423,15 +423,94 @@ fn parse_rule(p: &mut Parser) -> Result<Rule, ParseError> {
 fn parse_statement(p: &mut Parser) -> Result<Statement, ParseError> {
 	match &p.current {
 		Some(Token::KwLet) => parse_let_stmt(p).map(Statement::Let),
-		Some(Token::Plus) => parse_add_stmt(p).map(Statement::Add),
-		Some(Token::Star) => parse_iterate_stmt(p).map(Statement::Iterate),
-		Some(Token::At) => parse_assert_stmt(p).map(Statement::Assert),
+		Some(Token::KwFor) => parse_for_stmt(p).map(Statement::For),
+		Some(Token::KwIf) => parse_if_stmt(p).map(Statement::If),
 		Some(Token::KwMust) => parse_must_stmt(p).map(Statement::Must),
+		Some(Token::KwAdd) => parse_add_stmt_keyword(p).map(Statement::Add),
+		Some(Token::At) => parse_assert_stmt(p).map(Statement::Assert),
 		other => Err(ParseError {
 			message: format!("expected statement, got {:?}", other),
 			span: p.span.clone(),
 		}),
 	}
+}
+
+fn parse_for_stmt(p: &mut Parser) -> Result<ForStmt, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwFor)?;
+	let var = p.expect_ident()?;
+	p.expect(Token::KwIn)?;
+	let collection = parse_expr(p)?;
+	p.expect(Token::LBrace)?;
+
+	let mut body = Vec::new();
+	while !p.at(&Token::RBrace) {
+		body.push(parse_statement(p)?);
+	}
+
+	p.expect(Token::RBrace)?;
+
+	Ok(ForStmt {
+		var,
+		collection,
+		body,
+		span: start..p.span.end,
+	})
+}
+
+fn parse_if_stmt(p: &mut Parser) -> Result<IfStmt, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwIf)?;
+	let condition = parse_expr(p)?;
+	p.expect(Token::LBrace)?;
+
+	let mut then_body = Vec::new();
+	while !p.at(&Token::RBrace) {
+		then_body.push(parse_statement(p)?);
+	}
+
+	p.expect(Token::RBrace)?;
+
+	let else_body = if p.at(&Token::KwElse) {
+		p.advance();
+		p.expect(Token::LBrace)?;
+
+		let mut body = Vec::new();
+		while !p.at(&Token::RBrace) {
+			body.push(parse_statement(p)?);
+		}
+
+		p.expect(Token::RBrace)?;
+		Some(body)
+	} else {
+		None
+	};
+
+	Ok(IfStmt {
+		condition,
+		then_body,
+		else_body,
+		span: start..p.span.end,
+	})
+}
+
+fn parse_add_stmt_keyword(p: &mut Parser) -> Result<AddStmt, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwAdd)?;
+	p.expect(Token::LParen)?;
+	let subject = parse_expr(p)?;
+	p.expect(Token::Comma)?;
+	let predicate = parse_qualified_name(p)?;
+	p.expect(Token::Comma)?;
+	let object = parse_expr(p)?;
+	p.expect(Token::RParen)?;
+
+	Ok(AddStmt {
+		subject,
+		predicate,
+		object,
+		span: start..p.span.end,
+	})
 }
 
 fn parse_must_stmt(p: &mut Parser) -> Result<MustStmt, ParseError> {
@@ -522,51 +601,6 @@ fn parse_let_stmt(p: &mut Parser) -> Result<LetStmt, ParseError> {
 	})
 }
 
-fn parse_add_stmt(p: &mut Parser) -> Result<AddStmt, ParseError> {
-	let start = p.span.start;
-	p.expect(Token::Plus)?;
-	p.expect(Token::LParen)?;
-	let subject = parse_expr(p)?;
-	p.expect(Token::Comma)?;
-	let predicate = parse_qualified_name(p)?;
-	p.expect(Token::Comma)?;
-	let object = parse_expr(p)?;
-	p.expect(Token::RParen)?;
-
-	Ok(AddStmt {
-		subject,
-		predicate,
-		object,
-		span: start..p.span.end,
-	})
-}
-
-fn parse_iterate_stmt(p: &mut Parser) -> Result<IterateStmt, ParseError> {
-	let start = p.span.start;
-	p.expect(Token::Star)?;
-	p.expect(Token::LParen)?;
-	let var = p.expect_ident()?;
-	p.expect(Token::KwIn)?;
-	let collection = parse_expr(p)?;
-	p.expect(Token::Comma)?;
-	p.expect(Token::LBrace)?;
-
-	let mut body = Vec::new();
-	while !p.at(&Token::RBrace) {
-		body.push(parse_statement(p)?);
-	}
-
-	p.expect(Token::RBrace)?;
-	p.expect(Token::RParen)?;
-
-	Ok(IterateStmt {
-		var,
-		collection,
-		body,
-		span: start..p.span.end,
-	})
-}
-
 fn parse_assert_stmt(p: &mut Parser) -> Result<AssertStmt, ParseError> {
 	let start = p.span.start;
 	p.expect(Token::At)?;
@@ -598,8 +632,9 @@ fn parse_expr(p: &mut Parser) -> Result<Expr, ParseError> {
 			p.advance();
 			Ok(Expr::Blank(span))
 		}
-		Some(Token::Question) => parse_query_expr(p),
-		Some(Token::Plus) => parse_add_expr(p),
+		Some(Token::KwQuery) => parse_query_expr_keyword(p),
+		Some(Token::KwAdd) => parse_add_expr_keyword(p),
+		Some(Token::KwMatch) => parse_match_expr(p),
 		Some(Token::StringLiteral(s)) => {
 			let s = s.clone();
 			let span = p.span.clone();
@@ -639,22 +674,9 @@ fn parse_expr(p: &mut Parser) -> Result<Expr, ParseError> {
 	}
 }
 
-fn parse_query_expr(p: &mut Parser) -> Result<Expr, ParseError> {
+fn parse_add_expr_keyword(p: &mut Parser) -> Result<Expr, ParseError> {
 	let start = p.span.start;
-	p.expect(Token::Question)?;
-	p.expect(Token::LParen)?;
-	let path = parse_query_path(p)?;
-	p.expect(Token::RParen)?;
-
-	Ok(Expr::Query(QueryExpr {
-		path,
-		span: start..p.span.end,
-	}))
-}
-
-fn parse_add_expr(p: &mut Parser) -> Result<Expr, ParseError> {
-	let start = p.span.start;
-	p.expect(Token::Plus)?;
+	p.expect(Token::KwAdd)?;
 	p.expect(Token::LParen)?;
 	let subject = parse_expr(p)?;
 	p.expect(Token::Comma)?;
@@ -669,6 +691,142 @@ fn parse_add_expr(p: &mut Parser) -> Result<Expr, ParseError> {
 		object,
 		span: start..p.span.end,
 	})))
+}
+
+fn parse_query_expr_keyword(p: &mut Parser) -> Result<Expr, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwQuery)?;
+	p.expect(Token::LParen)?;
+	let path = parse_query_path(p)?;
+	p.expect(Token::RParen)?;
+
+	Ok(Expr::Query(QueryExpr {
+		path,
+		span: start..p.span.end,
+	}))
+}
+
+fn parse_match_expr(p: &mut Parser) -> Result<Expr, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwMatch)?;
+	let value = parse_expr(p)?;
+
+	// Optional as(Type, mode)
+	let as_type = if p.at(&Token::KwAs) {
+		Some(parse_as_expr(p)?)
+	} else {
+		None
+	};
+
+	p.expect(Token::LBrace)?;
+
+	let mut arms = Vec::new();
+	while !p.at(&Token::RBrace) {
+		arms.push(parse_match_arm(p)?);
+		// Optional comma between arms
+		if p.at(&Token::Comma) {
+			p.advance();
+		}
+	}
+
+	p.expect(Token::RBrace)?;
+
+	Ok(Expr::Match(Box::new(MatchExpr {
+		value,
+		as_type,
+		arms,
+		span: start..p.span.end,
+	})))
+}
+
+fn parse_as_expr(p: &mut Parser) -> Result<AsExpr, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwAs)?;
+	p.expect(Token::LParen)?;
+	let target_type = parse_qualified_name(p)?;
+	p.expect(Token::Comma)?;
+
+	let mode = match &p.current {
+		Some(Token::KwStrict) => {
+			p.advance();
+			ConvertMode::Strict
+		}
+		Some(Token::KwLazy) => {
+			p.advance();
+			ConvertMode::Lazy
+		}
+		other => {
+			return Err(ParseError {
+				message: format!("expected 'strict' or 'lazy', got {:?}", other),
+				span: p.span.clone(),
+			});
+		}
+	};
+
+	p.expect(Token::RParen)?;
+
+	Ok(AsExpr {
+		target_type,
+		mode,
+		span: start..p.span.end,
+	})
+}
+
+fn parse_match_arm(p: &mut Parser) -> Result<MatchArm, ParseError> {
+	let start = p.span.start;
+	let mut patterns = Vec::new();
+
+	// Parse patterns (comma-separated)
+	loop {
+		patterns.push(parse_match_pattern(p)?);
+		if p.at(&Token::Comma) && !p.at(&Token::FatArrow) {
+			// Look ahead - if next is FatArrow, stop
+			p.advance();
+			// Check if we're now at FatArrow or another pattern
+			if p.at(&Token::FatArrow) {
+				break;
+			}
+		} else {
+			break;
+		}
+	}
+
+	p.expect(Token::FatArrow)?;
+	let result = parse_expr(p)?;
+
+	Ok(MatchArm {
+		patterns,
+		result,
+		span: start..p.span.end,
+	})
+}
+
+fn parse_match_pattern(p: &mut Parser) -> Result<MatchPattern, ParseError> {
+	if p.at(&Token::Underscore) {
+		p.advance();
+		Ok(MatchPattern::Wildcard)
+	} else if p.at_ident() {
+		let name = p.expect_ident()?;
+		Ok(MatchPattern::Variant(name))
+	} else {
+		Err(ParseError {
+			message: format!("expected pattern (identifier or _), got {:?}", p.current),
+			span: p.span.clone(),
+		})
+	}
+}
+
+fn parse_query_expr(p: &mut Parser) -> Result<Expr, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::Question)?;
+	p.expect(Token::LParen)?;
+	let path = parse_query_path(p)?;
+	p.expect(Token::RParen)?;
+
+	Ok(Expr::Query(QueryExpr {
+		path,
+		span: start..p.span.end,
+	}))
 }
 
 fn parse_query_path(p: &mut Parser) -> Result<QueryPath, ParseError> {
@@ -941,7 +1099,7 @@ mod tests {
 	fn parse_simple_rule() {
 		let src = r#"
 		rule derive_stores {
-			let stores = ?(cfn:Resource)
+			let stores = query(cfn:Resource)
 		}
 	"#;
 		let source = Wa2Source::from_str(src);
@@ -990,7 +1148,7 @@ mod tests {
 	fn parse_path_with_wildcard() {
 		let src = r#"
 rule test {
-	let x = ?(core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])
+	let x = query(core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])
 }
 "#;
 		let source = Wa2Source::from_str(src);
@@ -1004,7 +1162,7 @@ rule test {
 
 	#[test]
 	fn debug_lex_predicate() {
-		let src = r#"?(core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])"#;
+		let src = r#"query(core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])"#;
 		let source = Wa2Source::from_str(src);
 		let lex = source.lexer();
 

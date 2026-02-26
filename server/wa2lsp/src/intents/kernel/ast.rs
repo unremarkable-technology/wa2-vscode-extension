@@ -143,12 +143,13 @@ pub struct Rule {
 pub enum Statement {
 	Let(LetStmt),
 	Add(AddStmt),
-	Iterate(IterateStmt),
+	For(ForStmt),
 	Assert(AssertStmt),
 	Must(MustStmt),
+	If(IfStmt),
 }
 
-/// Let binding: let x = ?(...)
+/// Let binding: let x = query(...)
 #[derive(Debug, Clone)]
 pub struct LetStmt {
 	pub name: String,
@@ -156,7 +157,7 @@ pub struct LetStmt {
 	pub span: Span,
 }
 
-/// Add statement: +(s, p, o)
+/// Add statement: add(s, p, o)
 #[derive(Debug, Clone)]
 pub struct AddStmt {
 	pub subject: Expr,
@@ -165,12 +166,21 @@ pub struct AddStmt {
 	pub span: Span,
 }
 
-/// Iterate statement: *(x in xs, { ... })
+/// For statement (new syntax): for x in xs { ... }
 #[derive(Debug, Clone)]
-pub struct IterateStmt {
+pub struct ForStmt {
 	pub var: String,
 	pub collection: Expr,
 	pub body: Vec<Statement>,
+	pub span: Span,
+}
+
+/// If statement: if cond { ... } else { ... }
+#[derive(Debug, Clone)]
+pub struct IfStmt {
+	pub condition: Expr,
+	pub then_body: Vec<Statement>,
+	pub else_body: Option<Vec<Statement>>,
 	pub span: Span,
 }
 
@@ -181,7 +191,7 @@ pub struct AssertStmt {
 	pub span: Span,
 }
 
-/// Must statement: must ?(expr) or must ?(expr) { subject: x, area: Y, message: "..." }
+/// Must statement: must query(expr) { subject: x, area: Y, message: "..." }
 #[derive(Debug, Clone)]
 pub struct MustStmt {
 	pub expr: Expr,
@@ -205,9 +215,9 @@ pub enum Expr {
 	Var(String, Span),
 	/// Blank node: _
 	Blank(Span),
-	/// Query: ?(//core:Store[...])
+	/// Query: query(core:Store[...])
 	Query(QueryExpr),
-	/// Add expression: +(s, p, o) - returns subject
+	/// Add expression: add(s, p, o) - returns subject
 	Add(Box<AddExpr>),
 	/// Qualified name literal: core:Store
 	QName(QualifiedName),
@@ -217,16 +227,18 @@ pub enum Expr {
 	Bool(bool, Span),
 	/// empty(expr) builtin
 	Empty(Box<Expr>, Span),
+	/// Match expression: match v as(T, strict) { ... }
+	Match(Box<MatchExpr>),
 }
 
-/// Query expression: ?(path)
+/// Query expression: query(path)
 #[derive(Debug, Clone)]
 pub struct QueryExpr {
 	pub path: QueryPath,
 	pub span: Span,
 }
 
-/// Query path: //core:Store[predicate]
+/// Query path: core:Store[predicate]
 #[derive(Debug, Clone)]
 pub struct QueryPath {
 	pub steps: Vec<QueryStep>,
@@ -245,8 +257,8 @@ pub struct QueryStep {
 /// Axis in query
 #[derive(Debug, Clone)]
 pub enum Axis {
-	Child,      // /
-	Descendant, // //
+	Child, // /
+	Descendant,
 	DescendantOrSelf,
 }
 
@@ -258,13 +270,54 @@ pub enum QueryPredicate {
 	Exists(QueryPath),
 }
 
-/// Add expression: +(s, p, o)
+/// Add expression: add(s, p, o)
 #[derive(Debug, Clone)]
 pub struct AddExpr {
 	pub subject: Expr,
 	pub predicate: QualifiedName,
 	pub object: Expr,
 	pub span: Span,
+}
+
+/// Match expression: match v as(T, strict) { A, B => true, _ => false }
+#[derive(Debug, Clone)]
+pub struct MatchExpr {
+	pub value: Expr,
+	pub as_type: Option<AsExpr>,
+	pub arms: Vec<MatchArm>,
+	pub span: Span,
+}
+
+/// As expression for type coercion: as(Type, strict)
+#[derive(Debug, Clone)]
+pub struct AsExpr {
+	pub target_type: QualifiedName,
+	pub mode: ConvertMode,
+	pub span: Span,
+}
+
+/// Conversion mode for as()
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConvertMode {
+	Strict,
+	Lazy,
+}
+
+/// Match arm: Pattern => result
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+	pub patterns: Vec<MatchPattern>,
+	pub result: Expr,
+	pub span: Span,
+}
+
+/// Match pattern
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+	/// Named variant: MissionCritical
+	Variant(String),
+	/// Wildcard: _
+	Wildcard,
 }
 
 /// Modal verb for policy bindings

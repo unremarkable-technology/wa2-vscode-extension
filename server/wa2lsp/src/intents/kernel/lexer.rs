@@ -40,6 +40,24 @@ pub enum Token {
 	KwShould,
 	#[token("may")]
 	KwMay,
+	#[token("query")]
+	KwQuery,
+	#[token("add")]
+	KwAdd,
+	#[token("for")]
+	KwFor,
+	#[token("if")]
+	KwIf,
+	#[token("else")]
+	KwElse,
+	#[token("match")]
+	KwMatch,
+	#[token("as")]
+	KwAs,
+	#[token("strict")]
+	KwStrict,
+	#[token("lazy")]
+	KwLazy,
 
 	// Symbols
 	#[token("@")]
@@ -66,6 +84,8 @@ pub enum Token {
 	Dot,
 	#[token("=")]
 	Eq,
+	#[token("=>")]
+	FatArrow,
 	#[token("+")]
 	Plus,
 	#[token("?")]
@@ -156,14 +176,39 @@ mod tests {
 	}
 
 	#[test]
-	fn lex_rule() {
-		let src = r#"rule derive_stores { let x = ?(cfn:Resource) }"#;
+	fn lex_rule_new_syntax() {
+		let src = r#"rule test { let x = query(cfn:Resource) }"#;
 		let source = Wa2Source::from_str(src);
-		let tokens: Vec<_> = source.lexer().collect();
+		let tokens: Vec<_> = source.lexer().filter_map(|r| r.ok()).collect();
 
-		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::KwRule))));
-		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::KwLet))));
-		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::Question))));
+		assert!(tokens.contains(&Token::KwRule));
+		assert!(tokens.contains(&Token::KwLet));
+		assert!(tokens.contains(&Token::KwQuery));
+	}
+
+	#[test]
+	fn lex_for_if_match() {
+		let src = r#"for x in items { if cond { match v as(T, strict) { A => true } } }"#;
+		let source = Wa2Source::from_str(src);
+		let tokens: Vec<_> = source.lexer().filter_map(|r| r.ok()).collect();
+
+		assert!(tokens.contains(&Token::KwFor));
+		assert!(tokens.contains(&Token::KwIf));
+		assert!(tokens.contains(&Token::KwMatch));
+		assert!(tokens.contains(&Token::KwAs));
+		assert!(tokens.contains(&Token::KwStrict));
+		assert!(tokens.contains(&Token::FatArrow));
+	}
+
+	#[test]
+	fn lex_fat_arrow() {
+		let src = r#"A => true"#;
+		let source = Wa2Source::from_str(src);
+		let mut lex = source.lexer();
+
+		assert_eq!(lex.next(), Some(Ok(Token::Ident("A".into()))));
+		assert_eq!(lex.next(), Some(Ok(Token::FatArrow)));
+		assert_eq!(lex.next(), Some(Ok(Token::KwTrue)));
 	}
 
 	#[test]
@@ -178,38 +223,23 @@ mod tests {
 	}
 
 	#[test]
-	fn lex_annotation() {
-		let src = r#"@(description = "test")"#;
-		let source = Wa2Source::from_str(src);
-		let mut lex = source.lexer();
-
-		assert_eq!(lex.next(), Some(Ok(Token::At)));
-		assert_eq!(lex.next(), Some(Ok(Token::LParen)));
-		assert_eq!(lex.next(), Some(Ok(Token::Ident("description".into()))));
-		assert_eq!(lex.next(), Some(Ok(Token::Eq)));
-		assert_eq!(lex.next(), Some(Ok(Token::StringLiteral("test".into()))));
-		assert_eq!(lex.next(), Some(Ok(Token::RParen)));
-	}
-
-	#[test]
 	fn lex_comment() {
 		let src = r#"// this is a comment
 struct Foo {}"#;
 		let source = Wa2Source::from_str(src);
 		let mut lex = source.lexer();
 
-		// Comment should be skipped, first token is struct
 		assert_eq!(lex.next(), Some(Ok(Token::KwStruct)));
 		assert_eq!(lex.next(), Some(Ok(Token::Ident("Foo".into()))));
 	}
 
 	#[test]
 	fn lex_path_with_slash() {
-		let src = r#"?(store/core:source)"#;
+		let src = r#"query(store/core:source)"#;
 		let source = Wa2Source::from_str(src);
 		let tokens: Vec<_> = source.lexer().filter_map(|r| r.ok()).collect();
 
-		assert!(tokens.contains(&Token::Question));
+		assert!(tokens.contains(&Token::KwQuery));
 		assert!(tokens.contains(&Token::LParen));
 		assert!(tokens.contains(&Token::Ident("store".into())));
 		assert!(tokens.contains(&Token::Slash));
