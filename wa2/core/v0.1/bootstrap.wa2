@@ -107,8 +107,23 @@ instance core:workload: core:Workload
 // ═══════════════════════════════════════════════════════════════════
 
 namespace data {
+	@#doc(
+		tldr = "Evidence of data criticality classification",
+		why = "Stores with criticality evidence have been assessed for business impact. This enables risk-appropriate protection decisions."
+	)
 	struct Criticality {}
+
+	@#doc(
+		tldr = "Evidence of data resilience controls",
+		why = "Stores with resilience evidence are protected against data loss through replication, backups, or other recovery mechanisms."
+	)
 	struct Resilience {}
+
+	@#doc(
+		tldr = "Evidence of data sensitivity classification", 
+		why = "Stores with sensitivity evidence have been assessed for confidentiality requirements. This enables appropriate access controls and encryption."
+	)
+	struct Sensitivity {}
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -132,7 +147,11 @@ rule ensure_stores_have_data_criticality {
 
 	// for all in scope, do we satisfy
 	*(store in scope, {
-		must ?(store/core:Evidence/data:Criticality)
+		must ?(store/core:Evidence/data:Criticality) {
+			subject: store,
+			area: data:Criticality,
+			message: "Stores need to have criticality to understand intent"
+		}
 	})
 }
 
@@ -144,7 +163,11 @@ rule ensure_critical_stores_are_protected {
 
 	// for all in scope, do we satisfy
 	*(store in scope, {
-		must ?(store/core:Evidence/data:Resilience)
+		must ?(store/core:Evidence/data:Resilience) {
+			subject: store,
+			area: data:Resilience,
+			message: "Critical Stores need to be protected from loss"
+		}
 	})
 }
 
@@ -159,55 +182,66 @@ rule ensure_critical_stores_are_protected {
 // without understanding tagging, CFN, AWS Services, or S3 replication.
 
 @#doc(
-    tldr = "Classify data sensitivity for security controls",
-    why = "Sensitivity classification drives encryption, access control, and audit requirements. For example, website assets don't need encryption, whilst healthcare records need encryption and restricted access."
+	 tldr = "Classify data sensitivity for security controls",
+	 why = "Sensitivity classification drives encryption, access control, and audit requirements. For example, website assets don't need encryption, whilst healthcare records need encryption and restricted access."
 )
 enum DataSensitivity {
-    Public,
-    Internal,
-    Confidential,
-    Restricted
+	 Public,
+	 Internal,
+	 Confidential,
+	 Restricted
 }
 
 @#doc(
-    tldr = "Classify data criticality for protection controls",
-    why = "Criticality classification drives backup and recovery requirements. Easily recreated data doesn't need backing up, whilst employment records need protection against loss."
+	 tldr = "Classify data criticality for protection controls",
+	 why = "Criticality classification drives backup and recovery requirements. Easily recreated data doesn't need backing up, whilst employment records need protection against loss."
 )
 enum DataCriticality {
-    Disposable,
-    NonCritical,
-    Important,
-    BusinessCritical,
-    MissionCritical
+	 Disposable,
+	 NonCritical,
+	 Important,
+	 BusinessCritical,
+	 MissionCritical
 }
 
 rule ensure_stores_have_sensitivity_tag {
-    let stores = ?(//core:Store)
-    
-    *(store in stores, {
-        let source = ?(store/core:source)
-        
-        must ?(source/aws:Tags[aws:Key = "DataSensitivity"]) {
-            subject: source,
-            area: DataSensitivity,
-            message: "Add a DataSensitivity tag to this resource"
-        }
-    })
+	let stores = ?(//core:Store)
+
+	*(store in stores, {
+		let source = ?(store/core:source)
+		
+		must ?(source/aws:Tags/*[aws:Key = "DataSensitivity"]) {
+			subject: source,
+			area: core:DataSensitivity,
+			message: "Add a DataSensitivity tag to this resource"
+		}
+
+		let evidence = +(_, wa2:type, core:Evidence)
+		+(store, wa2:contains, evidence)
+		let fact = +(_, wa2:type, data:Sensitivity)
+		+(evidence, wa2:contains, fact)
+	})
 }
 
 rule ensure_stores_have_criticality_tag {
-    let stores = ?(//core:Store)
-    
-    *(store in stores, {
-        let source = ?(store/core:source)
-        
-        must ?(source/aws:Tags[aws:Key = "DataCriticality"]) {
-            subject: source,
-            area: DataCriticality,
-            message: "Add a DataCriticality tag to this resource"
-        }
-    })
+	let stores = ?(//core:Store)
+
+	*(store in stores, {
+		let source = ?(store/core:source)
+
+		must ?(source/aws:Tags/*[aws:Key = "DataCriticality"]) {
+			subject: source,
+			area: core:DataCriticality,
+			message: "Add a DataCriticality tag to this resource"
+		}
+
+		let evidence = +(_, wa2:type, core:Evidence)
+		+(store, wa2:contains, evidence)
+		let fact = +(_, wa2:type, data:Criticality)
+		+(evidence, wa2:contains, fact)
+	})
 }
+
 //
 //rule evaluate_aws_cfn_stores {
 //	let cfn_resources = ?(//cfn:Resource)
@@ -232,6 +266,8 @@ rule ensure_stores_have_criticality_tag {
 //	})
 //}
 //
+
+
 rule evaluate_aws_s3_resilience {
 	 let replicated_stores = ?(//cfn:Resource[aws:type = "AWS::S3::Bucket"][
 		  aws:VersioningConfiguration/aws:Status = "Enabled"

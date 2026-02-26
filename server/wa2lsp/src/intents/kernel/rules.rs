@@ -11,14 +11,32 @@ pub struct RuleError {
 	pub message: String,
 }
 
+/// Result of executing a statement
+enum StmtResult {
+	Continue,
+	/// Guard failed - skip rest of body
+	Guard,
+}
+
 /// Reference binding: map of loop variable names to entity values
 type ReferenceBinding = Vec<(String, EntityId)>;
+
+struct DeferredMust {
+	rule_name: String,
+	expr: Expr,
+	env: Env,
+	subject: Option<EntityId>,
+	area: Option<EntityId>,
+	message: Option<String>,
+	modal: Modal,
+}
 
 pub struct RuleEngine {
 	max_iterations: usize,
 	/// Tracks (rule_name, reference_binding) combinations already processed
 	processed: HashSet<(String, ReferenceBinding)>,
 	current_modal: Option<Modal>,
+	deferred_musts: Vec<DeferredMust>,
 }
 
 impl Default for RuleEngine {
@@ -33,6 +51,7 @@ impl RuleEngine {
 			max_iterations: 100,
 			processed: HashSet::new(),
 			current_modal: None,
+			deferred_musts: Vec::new(),
 		}
 	}
 
@@ -47,28 +66,39 @@ impl RuleEngine {
 		rule_modals: &HashMap<String, Modal>,
 	) -> Result<(), RuleError> {
 		self.processed.clear();
+		self.deferred_musts.clear();
 
+		// Phase 1: Run to fixed-point, defer must failures
 		for _ in 0..self.max_iterations {
 			let initial_count = model.statement_count();
 
 			for rule in rules {
-				// Set current modal for this rule
 				self.current_modal = rule_modals.get(&rule.name).copied();
 				self.execute_rule(model, rule)?;
 			}
 
 			let final_count = model.statement_count();
 			if final_count == initial_count {
-				return Ok(());
+				break;
 			}
 		}
 
-		Err(RuleError {
-			message: format!(
-				"rules did not converge after {} iterations",
-				self.max_iterations
-			),
-		})
+		// Phase 2: Re-evaluate deferred musts and create failures
+		for deferred in std::mem::take(&mut self.deferred_musts) {
+			let result = self.eval_expr(model, &deferred.expr, &deferred.env)?;
+			if !self.is_satisfied(&result) {
+				self.create_rich_failure(
+					model,
+					&deferred.rule_name,
+					deferred.subject,
+					deferred.area,
+					deferred.message,
+					deferred.modal,
+				)?;
+			}
+		}
+
+		Ok(())
 	}
 
 	fn execute_rule(&mut self, model: &mut Model, rule: &Rule) -> Result<(), RuleError> {
@@ -86,7 +116,10 @@ impl RuleEngine {
 		reference_binding: &ReferenceBinding,
 	) -> Result<(), RuleError> {
 		for stmt in stmts {
-			self.execute_statement(model, stmt, env, rule_name, reference_binding)?;
+			match self.execute_statement(model, stmt, env, rule_name, reference_binding)? {
+				StmtResult::Continue => {}
+				StmtResult::Guard => return Ok(()), // Stop processing this body
+			}
 		}
 		Ok(())
 	}
@@ -98,11 +131,12 @@ impl RuleEngine {
 		env: &mut Env,
 		rule_name: &str,
 		reference_binding: &ReferenceBinding,
-	) -> Result<(), RuleError> {
+	) -> Result<StmtResult, RuleError> {
 		match stmt {
 			Statement::Let(let_stmt) => {
 				let value = self.eval_expr(model, &let_stmt.value, env)?;
 				env.bind(let_stmt.name.clone(), value);
+				Ok(StmtResult::Continue)
 			}
 
 			Statement::Add(add_stmt) => {
@@ -136,6 +170,7 @@ impl RuleEngine {
 						});
 					}
 				}
+				Ok(StmtResult::Continue)
 			}
 
 			Statement::Iterate(iter_stmt) => {
@@ -166,6 +201,7 @@ impl RuleEngine {
 						&new_binding,
 					)?;
 				}
+				Ok(StmtResult::Continue)
 			}
 
 			Statement::Assert(assert_stmt) => {
@@ -173,14 +209,13 @@ impl RuleEngine {
 				if !self.is_satisfied(&result) {
 					self.create_failure(model, rule_name, "assertion failed")?;
 				}
+				Ok(StmtResult::Continue)
 			}
 
 			Statement::Must(must_stmt) => {
 				let result = self.eval_expr(model, &must_stmt.expr, env)?;
 				if !self.is_satisfied(&result) {
-					let modal = self.current_modal.unwrap_or(Modal::Must);
-
-					// Get subject from metadata or fall back to context
+					// Evaluate subject/area now, defer failure creation
 					let subject = if let Some(ref meta) = must_stmt.metadata {
 						if let Some(ref subj_expr) = meta.subject {
 							Some(self.eval_expr_to_entity(model, subj_expr, env)?)
@@ -191,7 +226,6 @@ impl RuleEngine {
 						self.get_context_entity(env)
 					};
 
-					// Get area entity if specified
 					let area = if let Some(ref meta) = must_stmt.metadata {
 						if let Some(ref area_name) = meta.area {
 							model.resolve(&area_name.to_string())
@@ -202,15 +236,26 @@ impl RuleEngine {
 						None
 					};
 
-					// Get message if specified
 					let message = must_stmt.metadata.as_ref().and_then(|m| m.message.clone());
+					let modal = self.current_modal.unwrap_or(Modal::Must);
 
-					self.create_rich_failure(model, rule_name, subject, area, message, modal)?;
+					self.deferred_musts.push(DeferredMust {
+						rule_name: rule_name.to_string(),
+						expr: must_stmt.expr.clone(),
+						env: env.clone(),
+						subject,
+						area,
+						message,
+						modal,
+					});
+
+					// Guard: skip rest of body
+					return Ok(StmtResult::Guard);
 				}
+				// If must passed, continue to next statements
+				Ok(StmtResult::Continue)
 			}
 		}
-
-		Ok(())
 	}
 
 	fn create_rich_failure(

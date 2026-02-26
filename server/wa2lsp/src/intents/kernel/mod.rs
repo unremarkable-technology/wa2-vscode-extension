@@ -367,7 +367,7 @@ mod tests {
 		let mut engine = RuleEngine::new();
 		engine.run(&mut model, &rules).expect("run rules");
 
-		eprintln!("After rules:\n{}", model);
+		//eprintln!("After rules:\n{}", model);
 
 		// Verify core:Store was created for SourceBucket
 		let store_type = model
@@ -399,9 +399,11 @@ mod tests {
 			"Found {} Evidence nodes attached to Store",
 			evidence_nodes.len()
 		);
+      eprintln!("\nModel:\n===\n{}", &model);
+		eprintln!("Evidence:\n===\n{:?}", evidence_nodes);
 		assert_eq!(evidence_nodes.len(), 1, "Should have one Evidence node");
 
-		// Verify evidence contains a data:Resilience fact with value true
+		// Verify evidence contains a data:Resilience fact
 		let evidence = *evidence_nodes[0];
 		let resilience_type = model
 			.resolve("data:Resilience")

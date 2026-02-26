@@ -1003,6 +1003,7 @@ impl fmt::Display for Model {
 		writeln!(f, "─────────────────────────────────────")?;
 
 		for stmt in &self.statements {
+         let id = stmt.subject.0;
 			let subj = self.qualified_name(stmt.subject);
 			let pred = self.qualified_name(stmt.predicate);
 			let obj = match &stmt.object {
@@ -1010,7 +1011,7 @@ impl fmt::Display for Model {
 				Value::Literal(s) => format!("\"{}\"", s),
 				Value::Number(n) => n.to_string(),
 			};
-			writeln!(f, "{:20} {:20} {}", subj, pred, obj)?;
+			writeln!(f, "{:3} {:20} {:20} {}", id, subj, pred, obj)?;
 		}
 
 		Ok(())
