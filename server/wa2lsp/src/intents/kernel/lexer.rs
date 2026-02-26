@@ -5,15 +5,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use logos::{FilterResult, Logos};
-
-#[derive(Default, Clone)]
-pub struct LexerState {
-	paren_depth: usize,
-}
+use logos::Logos;
 
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(extras = LexerState)]
 pub enum Token {
 	// Keywords
 	#[token("namespace")]
@@ -56,9 +50,9 @@ pub enum Token {
 	LBrace,
 	#[token("}")]
 	RBrace,
-	#[token("(", on_lparen)]
+	#[token("(")]
 	LParen,
-	#[token(")", on_rparen)]
+	#[token(")")]
 	RParen,
 	#[token("[")]
 	LBracket,
@@ -83,10 +77,6 @@ pub enum Token {
 	#[token("/")]
 	Slash,
 
-	// Double slash - context dependent
-	#[regex(r"//", on_double_slash)]
-	DoubleSlash,
-
 	// Identifiers and literals
 	#[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().to_owned(), priority = 2)]
 	Ident(String),
@@ -100,32 +90,10 @@ pub enum Token {
 	#[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
 	NumberLiteral(i64),
 
-	// Skip whitespace and block comments
+	// Skip whitespace and comments
 	#[regex(r"[ \t\r\n]+", logos::skip)]
+	#[regex(r"//[^\n]*", logos::skip)]
 	_Skip,
-}
-
-fn on_lparen(lex: &mut logos::Lexer<Token>) -> FilterResult<(), ()> {
-	lex.extras.paren_depth += 1;
-	FilterResult::Emit(())
-}
-
-fn on_rparen(lex: &mut logos::Lexer<Token>) -> FilterResult<(), ()> {
-	lex.extras.paren_depth = lex.extras.paren_depth.saturating_sub(1);
-	FilterResult::Emit(())
-}
-
-fn on_double_slash(lex: &mut logos::Lexer<Token>) -> FilterResult<(), ()> {
-	if lex.extras.paren_depth > 0 {
-		// Inside parens: emit as DoubleSlash token (path term)
-		FilterResult::Emit(())
-	} else {
-		// Outside parens: treat as comment, skip to end of line
-		let remainder = lex.remainder();
-		let newline_pos = remainder.find('\n').unwrap_or(remainder.len());
-		lex.bump(newline_pos);
-		FilterResult::Skip
-	}
 }
 
 /// Type alias for convenience
@@ -189,14 +157,13 @@ mod tests {
 
 	#[test]
 	fn lex_rule() {
-		let src = r#"rule derive_stores { let x = ?(//cfn:Resource) }"#;
+		let src = r#"rule derive_stores { let x = ?(cfn:Resource) }"#;
 		let source = Wa2Source::from_str(src);
 		let tokens: Vec<_> = source.lexer().collect();
 
 		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::KwRule))));
 		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::KwLet))));
 		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::Question))));
-		assert!(tokens.iter().any(|t| matches!(t, Ok(Token::DoubleSlash))));
 	}
 
 	#[test]
@@ -225,7 +192,7 @@ mod tests {
 	}
 
 	#[test]
-	fn lex_comment_outside_parens() {
+	fn lex_comment() {
 		let src = r#"// this is a comment
 struct Foo {}"#;
 		let source = Wa2Source::from_str(src);
@@ -237,36 +204,18 @@ struct Foo {}"#;
 	}
 
 	#[test]
-	fn lex_double_slash_inside_parens() {
-		let src = r#"?(//cfn:Resource)"#;
-		let source = Wa2Source::from_str(src);
-		let tokens: Vec<_> = source.lexer().map(|r| r.ok()).collect();
-
-		assert!(tokens.contains(&Some(Token::Question)));
-		assert!(tokens.contains(&Some(Token::LParen)));
-		assert!(tokens.contains(&Some(Token::DoubleSlash)));
-		assert!(tokens.contains(&Some(Token::Ident("cfn".into()))));
-		assert!(tokens.contains(&Some(Token::Colon)));
-		assert!(tokens.contains(&Some(Token::Ident("Resource".into()))));
-		assert!(tokens.contains(&Some(Token::RParen)));
-	}
-
-	#[test]
-	fn lex_mixed_comments_and_paths() {
-		let src = r#"
-// this is a comment
-rule test {
-    let x = ?(//core:Store)  // another comment
-}
-"#;
+	fn lex_path_with_slash() {
+		let src = r#"?(store/core:source)"#;
 		let source = Wa2Source::from_str(src);
 		let tokens: Vec<_> = source.lexer().filter_map(|r| r.ok()).collect();
 
-		// Should have rule, test, {, let, x, =, ?, (, //, core, :, Store, ), }
-		assert!(tokens.contains(&Token::KwRule));
-		assert!(tokens.contains(&Token::KwLet));
-		assert!(tokens.contains(&Token::DoubleSlash));
+		assert!(tokens.contains(&Token::Question));
+		assert!(tokens.contains(&Token::LParen));
+		assert!(tokens.contains(&Token::Ident("store".into())));
+		assert!(tokens.contains(&Token::Slash));
 		assert!(tokens.contains(&Token::Ident("core".into())));
-		assert!(tokens.contains(&Token::Ident("Store".into())));
+		assert!(tokens.contains(&Token::Colon));
+		assert!(tokens.contains(&Token::Ident("source".into())));
+		assert!(tokens.contains(&Token::RParen));
 	}
 }

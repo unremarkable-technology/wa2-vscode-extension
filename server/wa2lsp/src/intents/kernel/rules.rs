@@ -406,7 +406,23 @@ impl RuleEngine {
 			Expr::Query(query) => {
 				let engine = QueryEngine::new();
 
-				// Check if the first step is a variable reference
+				// Check if the query is just a variable reference (single step, no predicates)
+				if query.path.steps.len() == 1 {
+					if let Some(first_step) = query.path.steps.first() {
+						if first_step.predicates.is_empty() {
+							if let Some(ref node_test) = first_step.node_test {
+								if node_test.namespace.is_none() {
+									// This is ?(var) - just return the variable's value
+									if let Some(result) = env.get(&node_test.name) {
+										return Ok(result.clone());
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// Check if the first step is a variable reference with more steps
 				if let Some(first_step) = query.path.steps.first() {
 					if let Some(ref node_test) = first_step.node_test {
 						let var_name = &node_test.name;

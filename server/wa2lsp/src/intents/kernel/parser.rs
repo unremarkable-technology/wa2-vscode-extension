@@ -675,19 +675,28 @@ fn parse_query_path(p: &mut Parser) -> Result<QueryPath, ParseError> {
 	let start = p.span.start;
 	let mut steps = Vec::new();
 
-	// Handle paths that start with a variable or qualified name (e.g., store/core:Evidence)
+	// First step: type name or variable (e.g., core:Store or store)
 	if p.at_name() {
 		let qname = parse_qualified_name(p)?;
+
+		// Collect predicates for first step
+		let mut predicates = Vec::new();
+		while p.at(&Token::LBracket) {
+			p.advance();
+			predicates.push(parse_query_predicate(p)?);
+			p.expect(Token::RBracket)?;
+		}
+
 		steps.push(QueryStep {
 			axis: Axis::Child,
 			node_test: Some(qname),
-			predicates: Vec::new(),
+			predicates,
 			span: start..p.span.end,
 		});
 	}
 
-	// Then handle /step or //step
-	while p.at(&Token::Slash) || p.at(&Token::DoubleSlash) {
+	// Then handle /step segments
+	while p.at(&Token::Slash) {
 		steps.push(parse_query_step(p)?);
 	}
 
@@ -700,21 +709,10 @@ fn parse_query_path(p: &mut Parser) -> Result<QueryPath, ParseError> {
 fn parse_query_step(p: &mut Parser) -> Result<QueryStep, ParseError> {
 	let start = p.span.start;
 
-	// Determine axis
-	let axis = if p.at(&Token::DoubleSlash) {
-		p.advance();
-		Axis::Descendant
-	} else if p.at(&Token::Slash) {
-		p.advance();
-		Axis::Child
-	} else {
-		return Err(ParseError {
-			message: format!("expected / or //, got {:?}", p.current),
-			span: p.span.clone(),
-		});
-	};
+	// Expect /
+	p.expect(Token::Slash)?;
 
-	// Node test (type name)
+	// Node test (type name or wildcard)
 	let node_test = if p.at_name() {
 		Some(parse_qualified_name(p)?)
 	} else if p.at(&Token::Star) {
@@ -733,7 +731,7 @@ fn parse_query_step(p: &mut Parser) -> Result<QueryStep, ParseError> {
 	}
 
 	Ok(QueryStep {
-		axis,
+		axis: Axis::Child,
 		node_test,
 		predicates,
 		span: start..p.span.end,
@@ -942,10 +940,10 @@ mod tests {
 	#[test]
 	fn parse_simple_rule() {
 		let src = r#"
-            rule derive_stores {
-                let stores = ?(//cfn:Resource)
-            }
-        "#;
+		rule derive_stores {
+			let stores = ?(cfn:Resource)
+		}
+	"#;
 		let source = Wa2Source::from_str(src);
 		let ast = parse(source.lexer()).unwrap();
 
@@ -992,7 +990,7 @@ mod tests {
 	fn parse_path_with_wildcard() {
 		let src = r#"
 rule test {
-    let x = ?(//core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])
+	let x = ?(core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])
 }
 "#;
 		let source = Wa2Source::from_str(src);
@@ -1006,7 +1004,7 @@ rule test {
 
 	#[test]
 	fn debug_lex_predicate() {
-		let src = r#"?(//core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])"#;
+		let src = r#"?(core:Store[core:source/aws:Rules/*/aws:Status = "Enabled"])"#;
 		let source = Wa2Source::from_str(src);
 		let lex = source.lexer();
 

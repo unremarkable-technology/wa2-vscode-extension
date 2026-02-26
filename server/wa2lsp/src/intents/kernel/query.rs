@@ -21,21 +21,12 @@ impl QueryEngine {
 			None => return Ok(Vec::new()),
 		};
 
-		// First step with Descendant axis = global scan
-		let mut current = if matches!(first_step.axis, Axis::Descendant | Axis::DescendantOrSelf) {
-			// All entities as candidates
-			let all: Vec<EntityId> = (0..model.entity_count())
-				.map(|i| EntityId(i as u32))
-				.collect();
-			// Apply type/predicate filters from first step
-			self.apply_filters(model, all, first_step)?
-		} else {
-			let root = match model.root() {
-				Some(r) => vec![r],
-				None => return Ok(Vec::new()),
-			};
-			self.execute_step(model, &root, first_step)?
-		};
+		// First step is always a global scan by type
+		// (Variable-based queries are handled by rules.rs using execute_from)
+		let all: Vec<EntityId> = (0..model.entity_count())
+			.map(|i| EntityId(i as u32))
+			.collect();
+		let mut current = self.apply_filters(model, all, first_step)?;
 
 		// Remaining steps
 		for step in rest {

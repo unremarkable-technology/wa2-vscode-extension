@@ -406,8 +406,8 @@ mod tests {
 		// Verify evidence contains a data:Resilience fact
 		let evidence = *evidence_nodes[0];
 		let resilience_type = model
-			.resolve("data:Resilience")
-			.expect("data:Resilience should exist");
+			.resolve("data:isResilient")
+			.expect("data:isResilient should exist");
 
 		let evidence_children = model.children(evidence);
 		let fact_nodes: Vec<_> = evidence_children
