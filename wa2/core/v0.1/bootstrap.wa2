@@ -206,7 +206,7 @@ namespace my {
 			must query(source/aws:Tags/*[aws:Key = "DataSensitivity"]) {
 				subject: source,
 				area: my:DataSensitivity,
-				message: "Add a DataSensitivity tag to this resource"
+				message: "Add a DataSensitivity tag (aws:Tags/aws:Key = 'DataSensitivity') to this Resource"
 			}
 
 			// chain(chain(store, core:Evidence), data:Sensitivity)
@@ -228,7 +228,7 @@ namespace my {
 			must query(dc_tag) {
 				subject: source,
 				area: my:DataCriticality,
-				message: "Add a DataCriticality tag to this resource"
+				message: "Add a DataCriticality tag (aws:Tags/aws:Key = 'DataCriticality') to this Resource"
 			}
 
 			let evidence = add(_, wa2:type, core:Evidence)

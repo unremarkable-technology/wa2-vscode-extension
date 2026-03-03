@@ -1,66 +1,77 @@
-# WA2 — AWS Well-Architected Guidance for VS Code
+# WA2 — Intent-First Architecture in VS Code
 
-**Real-time CloudFormation validation + Well-Architected best practices** as you build infrastructure. Get instant feedback on both syntax errors and architectural decisions.
+Define intent.  
+Attach evidence.  
+Enforce architecture — not just configuration.
+
+WA2 brings **Well-Architected thinking directly into your editor**, validating CloudFormation in real time while modelling architectural intent.
 
 Built by the creator of the AWS Well-Architected Framework.
 
 ---
 
-## ✨ Features
+## Why WA2?
 
-### Well-Architected Guidance
-- 🎯 **Intent-based validation** - Tag resources with sensitivity and criticality to unlock architectural guidance
-- 📚 **Educational tooltips** - Understand the "why" behind best practices, not just the "what"
-- ⚡ **Sub-second feedback** - No waiting for reviews or scans
-- 🔄 **Context-aware** - Recommendations adapt to your declared intent
+Most tools validate configuration.
 
-### Comprehensive CloudFormation Validation
-- **1000+ AWS resource types** - Official CloudFormation Registry schemas
-- **Property validation** - Required properties, types, allowed values  
-- **All intrinsic functions** - Ref, GetAtt, Sub, Join, If, FindInMap, and 10+ more
-- **AWS::LanguageExtensions** - Fn::ForEach, Transform support
-- **SAM/Serverless** - Transform-based resources
-- **Smart type checking** - Mirrors CloudFormation's coercion rules
+WA2 models architecture.
 
-### Developer Experience
-- ⚡ **9× faster than AWS Toolkit** - 0.37s vs 3.3s validation time
-- 🎯 **Accurate errors** - Precise line/column diagnostics
-- 💡 **Helpful suggestions** - "Did you mean X?" for typos
-- 🔍 **Go-to-definition** - Jump from Ref/GetAtt to resource definitions
+Instead of asking:
+
+> “Is encryption enabled?”
+
+WA2 asks:
+
+> “What is this resource for?”
+
+Then enforces controls appropriate to that declared purpose.
+
+**Intent → Obligation → Evidence**
 
 ---
 
-## 🚀 Quick Start
+## ✨ Core Capabilities
 
-1. **Install** - Search "WA2" in VS Code Extensions
-2. **Open** - Any CloudFormation `.yaml`, `.yml`, or `.json` file
-3. **Get guidance** - Errors, warnings, and architectural recommendations appear automatically
+### 🧠 Intent-Based Architecture
 
-**Example**: Start with a simple S3 bucket. WA2 prompts you to tag it with DataSensitivity and DataCriticality. Once tagged, it recommends appropriate protections based on your intent.
-
----
-
-## 📊 What's Validated
-
-✅ CloudFormation syntax & resource types  
-✅ Property requirements & type checking  
-✅ Intrinsic functions (Ref, GetAtt, Sub, 13+ more)  
-✅ Well-Architected principles (data protection, resilience)  
-✅ Intent-based architectural guidance  
+- Declare **DataSensitivity** and **DataCriticality**
+- Generate architectural obligations from declared intent
+- Attach evidence to resources
+- Get guidance that adapts to purpose, not just resource type
 
 ---
 
-## 💡 Well-Architected in Action
+### ⚙️ Real-Time CloudFormation Validation
 
-**Without intent:**
+WA2 includes a high-performance CloudFormation validator built in Rust.
+
+- 1000+ AWS resource types (CloudFormation Registry schemas)
+- Property validation & type checking
+- All intrinsic functions (Ref, GetAtt, Sub, Join, If, FindInMap, and more)
+- AWS::LanguageExtensions (Fn::ForEach, Transform support)
+- SAM / Serverless transforms
+- Precise line & column diagnostics
+
+Sub-second validation inside VS Code.
+
+---
+
+## 🏗️ Example
+
+### Without intent:
+
 ```yaml
 Resources:
   DataBucket:
     Type: AWS::S3::Bucket
 ```
-❌ WA2: "Tag this resource for DataSensitivity and DataCriticality"
 
-**With intent:**
+WA2 prompts you to classify the resource.
+
+---
+
+### With intent declared:
+
 ```yaml
 Resources:
   DataBucket:
@@ -70,25 +81,67 @@ Resources:
         - Key: DataCriticality
           Value: BusinessCritical
 ```
-💡 Hover for guidance: "Business critical data needs backup protection. Consider enabling versioning or cross-region replication."
+
+WA2 derives architectural obligations:
+
+> Business critical stores must be resilient.
+
+Guidance appears inline — tied to declared intent.
+
+---
+
+## 🧩 Framework as Language
+
+WA2 best practices are not hard-coded.
+
+The framework logic is expressed in a small, purpose-built language.
+
+This allows:
+
+- 90%+ of guidance to be defined outside the engine
+- Inspectable, modifiable architectural rules
+- Vendor-agnostic modelling
+- Traceable chains from source → classification → policy → evidence
+
+Framework as code.  
+Not framework as binary.
 
 ---
 
 ## ⚡ Performance
-```
-WA2:         0.37 seconds  ████
-AWS Toolkit: 3.33 seconds  ████████████████████████████████████
-```
 
-**9× faster** on typical templates.
+WA2 validates typical templates in ~0.37 seconds,  
+significantly faster than many existing editor-based validators.
 
----
+Built in Rust for predictable performance, low memory overhead, and fast parsing of large templates.
 
-## 🛠️ Support
-
-- **Issues**: [GitHub Issues](https://github.com/unremarkable-technology/wa2-vscode-extension/issues)
-- **Source**: [GitHub](https://github.com/unremarkable-technology/wa2-vscode-extension)
+Designed for consistent sub-second feedback as you build.
 
 ---
 
-**Built by the creator of the AWS Well-Architected Framework** • Shift left on architecture reviews
+## 🚀 Quick Start
+
+1. Install from the VS Code Marketplace  
+2. Open any `.yaml`, `.yml`, or `.json` CloudFormation file  
+3. Start declaring intent  
+
+---
+
+## 🔗 Links
+
+- GitHub: https://github.com/unremarkable-technology/wa2-vscode-extension  
+- Issues: https://github.com/unremarkable-technology/wa2-vscode-extension/issues  
+
+---
+
+Shift architecture left.
+
+---
+
+## ☕ Support WA2
+
+If you find WA2 useful and want to support continued development, you can buy me a coffee:
+
+<a href="https://buymeacoffee.com/fitz_xyz" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" height="28">
+</a>
