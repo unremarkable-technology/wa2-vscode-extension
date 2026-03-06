@@ -1,0 +1,6 @@
+[project]
+name = "test"
+entry = "main.wa2"
+
+[framework]
+path = "../../../wa2"

@@ -16,6 +16,8 @@ pub enum Token {
 	KwStruct,
 	#[token("enum")]
 	KwEnum,
+	#[token("use")]
+	KwUse,
 	#[token("type")]
 	KwType,
 	#[token("predicate")]

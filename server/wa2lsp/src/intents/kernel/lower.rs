@@ -90,6 +90,11 @@ impl<'m> Lower<'m> {
 				self.namespace_stack.pop();
 			}
 
+			Item::Use(_) => {
+				// TODO: Use statements are collected but not processed here
+				// Resolution happens in the multi-file loader (Phase 4)
+			}
+
 			Item::Type(type_decl) => {
 				let fqn = self.qualify(&type_decl.name);
 				self.model

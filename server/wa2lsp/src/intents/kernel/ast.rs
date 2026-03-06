@@ -15,6 +15,7 @@ pub struct Ast {
 #[derive(Debug, Clone)]
 pub enum Item {
 	Namespace(Namespace),
+   Use(Use),
 	Struct(Struct),
 	Enum(Enum),
 	Type(TypeDecl),
@@ -29,6 +30,13 @@ pub enum Item {
 pub struct Namespace {
 	pub name: String,
 	pub items: Vec<Item>,
+	pub span: Span,
+}
+
+/// Use declaration - imports a namespace
+#[derive(Debug, Clone)]
+pub struct Use {
+	pub namespace: QualifiedName,
 	pub span: Span,
 }
 

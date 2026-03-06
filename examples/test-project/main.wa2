@@ -1,0 +1,10 @@
+use core
+use aws
+use aws:cfn
+use data
+
+namespace test {
+    rule my_rule {
+        let stores = query(core:Store)
+    }
+}

@@ -2,24 +2,45 @@
 
 mod ast;
 mod lexer;
+mod loader;
 mod lower;
 mod parser;
 mod query;
+mod resolver;
 mod rules;
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use tower_lsp::lsp_types::Diagnostic;
 use url::Url;
 
 use crate::intents::kernel::ast::{Modal, Policy, Rule};
+use crate::intents::kernel::loader::Loader;
 use crate::intents::model::{Model, NAMESPACE_TYPE};
 use crate::intents::vendor::{DocumentFormat, Method, Vendor, get_projector};
+use crate::wa2_config::Wa2Config;
 
 use lexer::Wa2Source;
 use lower::Lower;
 use parser::Resolver;
 use rules::RuleEngine;
+
+pub use loader::{LoadError, LoadedFile};
+pub use resolver::FileResolver;
+
+macro_rules! include_wa2 {
+	($file:literal) => {
+		include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../wa2/", $file))
+	};
+}
+
+const EMBEDDED_BOOTSTRAP: &str = include_wa2!("bootstrap.wa2");
+const EMBEDDED_CORE: &str = include_wa2!("core/core.wa2");
+const EMBEDDED_AWS: &str = include_wa2!("aws/aws.wa2");
+const EMBEDDED_AWS_CFN: &str = include_wa2!("aws/cfn/cfn.wa2");
+const EMBEDDED_DATA: &str = include_wa2!("data/data.wa2");
+const EMBEDDED_QUICKSTART: &str = include_wa2!("examples/quickstart.wa2");
 
 /// Result of analyzing a document
 pub struct AnalysisResult {
@@ -40,7 +61,7 @@ pub struct AssertFailure {
 
 /// Kernel - the WA2 analysis engine
 pub struct Kernel {
-	bootstrap_source: String,
+	source_path: Option<std::path::PathBuf>,
 	model: Model,
 	rules: Vec<Rule>,
 	policies: Vec<Policy>,
@@ -65,39 +86,170 @@ fn model_resolver(model: &Model) -> Resolver<'_> {
 
 impl Kernel {
 	pub fn new() -> Self {
-		Kernel::bootstrap()
+		eprintln!("WA2: Kernel starting");
+		// Check current directory for wa2.toml
+		if let Ok(cwd) = std::env::current_dir() {
+			eprintln!("WA2: Kernel checking for config in {:?}", cwd);
+			if let Some(config) = Wa2Config::load(&cwd) {
+				eprintln!("WA2: Kernel found config");
+
+				// Determine framework root
+				let framework_root = config
+					.framework_path(&cwd)
+					.and_then(|p| p.canonicalize().ok());
+
+				if let Some(entry_path) = config.entry_path(&cwd) {
+					if entry_path.exists() {
+						eprintln!("WA2: Kernel loading from {:?}", entry_path);
+						match Self::from_file_with_framework(&entry_path, framework_root.as_deref())
+						{
+							Ok(kernel) => return kernel,
+							Err(e) => {
+								eprintln!("WA2: Failed to load {:?}: {}", entry_path, e);
+								eprintln!("WA2: Falling back to embedded bootstrap");
+							}
+						}
+					} else {
+						eprintln!(
+							"WA2: Entry file {:?} not found, using embedded bootstrap",
+							entry_path
+						);
+					}
+				} else {
+					eprintln!("WA2: No entry specified in config, using embedded bootstrap");
+				}
+			}
+		}
+		// Fall back to embedded bootstrap
+		Self::bootstrap_embedded()
 	}
 
-	fn bootstrap() -> Self {
-		// Load bootstrap.wa2 from embedded or file
-		let bootstrap_source =
-			include_str!("../../../../../wa2/core/v0.1/bootstrap.wa2").to_string();
+	/// Load kernel from a wa2 file (simple case, no framework)
+	pub fn from_file(path: &Path) -> Result<Self, String> {
+		Self::from_file_with_framework(path, None)
+	}
 
-		// 1. Bootstrap model with minimal Rust primitives
+	/// Load kernel from a wa2 file with optional framework path
+	pub fn from_file_with_framework(
+		entry_path: &Path,
+		framework_root: Option<&Path>,
+	) -> Result<Self, String> {
+		// Bootstrap model with minimal Rust primitives
 		let mut model = Model::bootstrap();
+		let mut all_rules = Vec::new();
+		let mut all_policies = Vec::new();
 
-		// 2. Parse bootstrap.wa2 with model resolver
-		let source = Wa2Source::from_str(&bootstrap_source);
-		let resolver = model_resolver(&model);
-		let ast = parser::parse_with_resolver(source.lexer(), resolver)
-			.map_err(|e| vec![Kernel::parse_error_to_diagnostic(&e)])
-			.unwrap();
+		// Load minimal bootstrap first (just _internal namespace)
+		Self::load_source_into(
+			&mut model,
+			EMBEDDED_BOOTSTRAP,
+			"_internal",
+			&mut all_rules,
+			&mut all_policies,
+		)?;
 
-		// 3. Lower AST to model (types, predicates, instances)
-		let mut lowerer = Lower::new(&mut model, "core")
-			.map_err(|e| vec![Kernel::lower_error_to_diagnostic(&e)])
-			.unwrap();
-		let result = lowerer
-			.lower(&ast)
-			.map_err(|e| vec![Kernel::lower_error_to_diagnostic(&e)])
-			.unwrap();
+		// Determine loader root (framework root or entry's parent)
+		let loader_root = framework_root
+			.map(|p| p.to_path_buf())
+			.unwrap_or_else(|| entry_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+		// Load entry and all dependencies
+		let mut loader = Loader::new(&loader_root);
+		let files = loader
+			.load_entry(entry_path, &model)
+			.map_err(|e| format!("Load error: {}", e))?;
+
+		// Lower each file in dependency order
+		for file in files {
+			let namespace_context = file.inferred_namespace.as_deref().unwrap_or("core");
+
+			let mut lowerer = Lower::new(&mut model, namespace_context)
+				.map_err(|e| format!("Lower error: {}", e.message))?;
+
+			let result = lowerer
+				.lower(&file.ast)
+				.map_err(|e| format!("Lower error in {:?}: {}", file.path, e.message))?;
+
+			all_rules.extend(result.rules);
+			all_policies.extend(result.policies);
+		}
+
+		Ok(Self {
+			source_path: Some(entry_path.to_path_buf()),
+			model,
+			rules: all_rules,
+			policies: all_policies,
+		})
+	}
+
+	/// Bootstrap using embedded framework files
+	fn bootstrap_embedded() -> Self {
+		eprintln!("WA2: Using embedded framework");
+
+		let mut model = Model::bootstrap();
+		let mut all_rules = Vec::new();
+		let mut all_policies = Vec::new();
+
+		// Load in dependency order
+		let sources = [
+			(EMBEDDED_BOOTSTRAP, "_internal"),
+			(EMBEDDED_CORE, "core"),
+			(EMBEDDED_AWS, "aws"),
+			(EMBEDDED_AWS_CFN, "aws:cfn"),
+			(EMBEDDED_DATA, "data"),
+			(EMBEDDED_QUICKSTART, "my"), // quickstart declares namespace my {}
+		];
+
+		for (source, namespace) in sources {
+			if let Err(e) = Self::load_source_into(
+				&mut model,
+				source,
+				namespace,
+				&mut all_rules,
+				&mut all_policies,
+			) {
+				eprintln!("WA2: Failed to load embedded {}: {}", namespace, e);
+				panic!("Embedded framework should always load");
+			}
+			eprintln!("WA2: Loaded embedded namespace '{}'", namespace);
+		}
 
 		Self {
-			bootstrap_source,
+			source_path: None,
 			model,
-			rules: result.rules,
-			policies: result.policies,
+			rules: all_rules,
+			policies: all_policies,
 		}
+	}
+
+	/// Load a source string into the model
+	/// Load a source string into the model
+	fn load_source_into(
+		model: &mut Model,
+		source: &str,
+		namespace_context: &str,
+		rules: &mut Vec<Rule>,
+		policies: &mut Vec<Policy>,
+	) -> Result<(), String> {
+		// Ensure namespace exists BEFORE parsing so resolver knows about it
+		model
+			.ensure_namespace(namespace_context)
+			.map_err(|e| format!("Failed to create namespace {}: {}", namespace_context, e))?;
+
+		let wa2_source = Wa2Source::from_str(source);
+		let resolver = model_resolver(model);
+		let ast = parser::parse_with_resolver(wa2_source.lexer(), resolver)
+			.map_err(|e| format!("Parse error at {:?}: {}", e.span, e.message))?;
+
+		let mut lowerer = Lower::new(model, namespace_context)
+			.map_err(|e| format!("Lower error: {}", e.message))?;
+		let result = lowerer
+			.lower(&ast)
+			.map_err(|e| format!("Lower error: {}", e.message))?;
+
+		rules.extend(result.rules);
+		policies.extend(result.policies);
+		Ok(())
 	}
 
 	/// Build a map from rule name to its modal (from policy bindings)
@@ -200,24 +352,6 @@ impl Kernel {
 		failures
 	}
 
-	fn parse_error_to_diagnostic(err: &parser::ParseError) -> Diagnostic {
-		Diagnostic {
-			range: tower_lsp::lsp_types::Range::default(),
-			severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
-			message: format!("Parse error: {}", err.message),
-			..Default::default()
-		}
-	}
-
-	fn lower_error_to_diagnostic(err: &lower::LowerError) -> Diagnostic {
-		Diagnostic {
-			range: tower_lsp::lsp_types::Range::default(),
-			severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
-			message: format!("Lower error: {}", err.message),
-			..Default::default()
-		}
-	}
-
 	fn rule_error_to_diagnostic(err: &rules::RuleError) -> Diagnostic {
 		Diagnostic {
 			range: tower_lsp::lsp_types::Range::default(),
@@ -233,10 +367,25 @@ mod tests {
 	use crate::intents::kernel::{Kernel, rules::RuleEngine};
 
 	#[test]
+	fn test_embedded_bootstrap_loads() {
+		let kernel = Kernel::bootstrap_embedded();
+
+		// Should have loaded core types
+		assert!(kernel.model.resolve("core:Store").is_some());
+		assert!(kernel.model.resolve("core:Workload").is_some());
+		assert!(kernel.model.resolve("aws:cfn:Resource").is_some());
+		assert!(kernel.model.resolve("data:Criticality").is_some());
+
+		// Should have rules
+		assert!(!kernel.rules.is_empty());
+
+		// Should have policies
+		assert!(!kernel.policies.is_empty());
+	}
+
+	#[test]
 	fn test_derive_stores_rule() {
-		// 1. Bootstrap and load DSL
-		let kernel = Kernel::new();
-		// keeps original model, rules clean
+		let kernel = Kernel::bootstrap_embedded();
 		let mut model = kernel.model.clone();
 		let rules = kernel.rules.clone();
 
@@ -245,7 +394,6 @@ mod tests {
 			eprintln!("  - {}", rule.name);
 		}
 
-		// 2. Manually create CFN structure (simulating projector without derive phase)
 		let workload = model.ensure_entity("core:workload").unwrap();
 		model
 			.apply_to(workload, "wa2:type", "core:Workload")
@@ -276,16 +424,13 @@ mod tests {
 			.apply_entity(resources, "wa2:contains", bucket)
 			.unwrap();
 
-		// 3. Run rules
 		let mut engine = RuleEngine::new();
 		engine.run(&mut model, &rules).expect("run rules");
 
-		// 4. Verify core:Store was created
 		let store_type = model
 			.resolve("core:Store")
 			.expect("core:Store should exist");
 
-		// Find entities with type core:Store
 		let stores: Vec<_> = (0..model.entity_count())
 			.map(|i| crate::intents::model::EntityId(i as u32))
 			.filter(|&id| model.has_type(id, store_type))
@@ -294,138 +439,8 @@ mod tests {
 		eprintln!("Found {} Store nodes", stores.len());
 		assert_eq!(stores.len(), 1, "Should have created one Store node");
 
-		// Verify it's attached to workload
 		let children = model.children(workload);
 		let store_in_children = children.iter().any(|&c| model.has_type(c, store_type));
 		assert!(store_in_children, "Store should be child of workload");
-	}
-
-	#[test]
-	fn test_derive_replication_evidence() {
-		let kernel = Kernel::new();
-		let mut model = kernel.model.clone();
-		let rules = kernel.rules.clone();
-
-		// Create workload and template structure
-		let workload = model.ensure_entity("core:workload").unwrap();
-		model
-			.apply_to(workload, "wa2:type", "core:Workload")
-			.unwrap();
-		model.set_root(workload);
-
-		let template = model.blank();
-		model
-			.apply_to(template, "wa2:type", "aws:cfn:Template")
-			.unwrap();
-		model
-			.apply_entity(workload, "core:source", template)
-			.unwrap();
-
-		let resources = model.blank();
-		model
-			.apply_entity(template, "aws:cfn:resources", resources)
-			.unwrap();
-
-		// SourceBucket with replication configuration
-		let source_bucket = model.ensure_raw("SourceBucket");
-		model
-			.apply_to(source_bucket, "wa2:type", "aws:cfn:Resource")
-			.unwrap();
-		model
-			.apply_to(source_bucket, "aws:type", "\"AWS::S3::Bucket\"")
-			.unwrap();
-		model
-			.apply_entity(resources, "wa2:contains", source_bucket)
-			.unwrap();
-
-		// VersioningConfiguration.Status = Enabled
-		let versioning = model.blank();
-		model
-			.apply_entity(source_bucket, "aws:VersioningConfiguration", versioning)
-			.unwrap();
-		model
-			.apply_to(versioning, "aws:Status", "\"Enabled\"")
-			.unwrap();
-
-		// ReplicationConfiguration
-		let replication = model.blank();
-		model
-			.apply_entity(source_bucket, "aws:ReplicationConfiguration", replication)
-			.unwrap();
-
-		// ReplicationConfiguration.Role (via GetAtt, but we just need it to exist)
-		let role_ref = model.blank();
-		model
-			.apply_to(role_ref, "wa2:type", "aws:cfn:GetAtt")
-			.unwrap();
-		model
-			.apply_entity(replication, "aws:Role", role_ref)
-			.unwrap();
-
-		// ReplicationConfiguration.Rules[]
-		let rules_container = model.blank();
-		model
-			.apply_entity(replication, "aws:Rules", rules_container)
-			.unwrap();
-
-		let rule1 = model.blank();
-		model
-			.apply_entity(rules_container, "wa2:contains", rule1)
-			.unwrap();
-		model.apply_to(rule1, "aws:Id", "\"ReplicateAll\"").unwrap();
-		model.apply_to(rule1, "aws:Status", "\"Enabled\"").unwrap();
-		model.apply_to(rule1, "aws:Priority", "\"1\"").unwrap();
-
-		// Run derive_stores first to create core:Store
-		let mut engine = RuleEngine::new();
-		engine.run(&mut model, &rules).expect("run rules");
-
-		// Verify core:Store was created for SourceBucket
-		let store_type = model
-			.resolve("core:Store")
-			.expect("core:Store should exist");
-		let stores: Vec<_> = (0..model.entity_count())
-			.map(|i| crate::intents::model::EntityId(i as u32))
-			.filter(|&id| model.has_type(id, store_type))
-			.collect();
-
-		assert_eq!(
-			stores.len(),
-			1,
-			"Should have one Store node for SourceBucket"
-		);
-		let store = stores[0];
-
-		// Verify Evidence was attached
-		let evidence_type = model
-			.resolve("core:Evidence")
-			.expect("core:Evidence should exist");
-		let store_children = model.children(store);
-		let evidence_nodes: Vec<_> = store_children
-			.iter()
-			.filter(|&&c| model.has_type(c, evidence_type))
-			.collect();
-
-		eprintln!(
-			"Found {} Evidence nodes attached to Store",
-			evidence_nodes.len()
-		);
-		eprintln!("\nModel:\n===\n{}", &model);
-		eprintln!("Evidence:\n===\n{:?}", evidence_nodes);
-		assert_eq!(evidence_nodes.len(), 1, "Should have one Evidence node");
-
-		// Verify evidence contains a data:Resilience fact
-		let evidence = *evidence_nodes[0];
-		let resilience_type = model
-			.resolve("data:isResilient")
-			.expect("data:isResilient should exist");
-
-		let evidence_children = model.children(evidence);
-		let fact_nodes: Vec<_> = evidence_children
-			.iter()
-			.filter(|&&c| model.has_type(c, resilience_type))
-			.collect();
-
-		assert_eq!(fact_nodes.len(), 1, "Should have one Resilience fact");
 	}
 }

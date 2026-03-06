@@ -22,6 +22,8 @@ datatest-stable = "0.3.3"
 id-arena = "2.2.1"
 indexmap = "2.13.0"
 logos = { version = "0.15", features = ["forbid_unsafe" ] }
+toml = "0.8"
+tempfile = "3"
 
 [[test]]
 name = "fixtures"

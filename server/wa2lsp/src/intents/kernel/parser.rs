@@ -201,6 +201,7 @@ fn parse_item(p: &mut Parser) -> Result<Item, ParseError> {
 
 	match &p.current {
 		Some(Token::KwNamespace) => parse_namespace(p).map(Item::Namespace),
+		Some(Token::KwUse) => parse_use(p).map(Item::Use),
 		Some(Token::KwStruct) => parse_struct(p, annotations).map(Item::Struct),
 		Some(Token::KwEnum) => parse_enum(p, annotations).map(Item::Enum),
 		Some(Token::KwType) => parse_type_decl(p, annotations).map(Item::Type),
@@ -213,6 +214,17 @@ fn parse_item(p: &mut Parser) -> Result<Item, ParseError> {
 			span: p.span.clone(),
 		}),
 	}
+}
+
+fn parse_use(p: &mut Parser) -> Result<Use, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwUse)?;
+	let namespace = parse_qualified_name(p)?;
+
+	Ok(Use {
+		namespace,
+		span: start..p.span.end,
+	})
 }
 
 fn parse_policy(p: &mut Parser) -> Result<Policy, ParseError> {
@@ -1351,7 +1363,7 @@ rule test {
 
 	#[test]
 	fn parse_bootstrap() {
-		let src = include_str!("../../../../../wa2/core/v0.1/bootstrap.wa2");
+		let src = super::super::EMBEDDED_BOOTSTRAP;
 		let source = Wa2Source::from_str(src);
 
 		// For bootstrap, namespaces are declared in the file itself
@@ -1637,5 +1649,60 @@ rule test {
 			results2.len()
 		);
 		assert_eq!(results2.len(), 1, "Should find 1 Store with predicate");
+	}
+
+	#[test]
+	fn parse_use_statement() {
+		let src = r#"use core"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		assert_eq!(ast.items.len(), 1);
+		match &ast.items[0] {
+			Item::Use(u) => {
+				assert_eq!(u.namespace.namespace, None);
+				assert_eq!(u.namespace.name, "core");
+			}
+			_ => panic!("expected use"),
+		}
+	}
+
+	#[test]
+	fn parse_use_nested_namespace() {
+		let src = r#"
+namespace aws { namespace cfn {} }
+use aws:cfn
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		assert_eq!(ast.items.len(), 2);
+		match &ast.items[1] {
+			Item::Use(u) => {
+				assert_eq!(u.namespace.namespace, Some("aws".to_string()));
+				assert_eq!(u.namespace.name, "cfn");
+			}
+			_ => panic!("expected use"),
+		}
+	}
+
+	#[test]
+	fn parse_multiple_use_statements() {
+		let src = r#"
+use core
+use aws
+use aws:cfn
+use data
+"#;
+		let source = Wa2Source::from_str(src);
+		// Resolver knows these namespaces exist
+		let resolver: Resolver =
+			Box::new(|name| matches!(name, "core" | "aws" | "aws:cfn" | "data"));
+		let ast = parse_with_resolver(source.lexer(), resolver).unwrap();
+
+		assert_eq!(ast.items.len(), 4);
+		for item in &ast.items {
+			assert!(matches!(item, Item::Use(_)));
+		}
 	}
 }
