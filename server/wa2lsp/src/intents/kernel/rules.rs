@@ -56,19 +56,24 @@ impl RuleEngine {
 	}
 
 	pub fn run(&mut self, model: &mut Model, rules: &[Rule]) -> Result<(), RuleError> {
-		self.run_with_modals(model, rules, &HashMap::new())
+		self.run_with_modals(model, &[], rules, &HashMap::new())
 	}
 
 	pub fn run_with_modals(
 		&mut self,
 		model: &mut Model,
+		derives: &[Derive],
 		rules: &[Rule],
 		rule_modals: &HashMap<String, Modal>,
 	) -> Result<(), RuleError> {
 		self.processed.clear();
 		self.deferred_musts.clear();
 
-		// Phase 1: Run to fixed-point, defer must failures
+		// Phase 1: Run derives to fixed-point (model building)
+		self.run_derives(model, derives)?;
+
+		// Phase 2: Run rules to fixed-point, defer must failures
+		self.processed.clear(); // Reset for rules phase
 		for _ in 0..self.max_iterations {
 			let initial_count = model.statement_count();
 
@@ -83,7 +88,7 @@ impl RuleEngine {
 			}
 		}
 
-		// Phase 2: Re-evaluate deferred musts and create failures
+		// Phase 3: Re-evaluate deferred musts and create failures
 		for deferred in std::mem::take(&mut self.deferred_musts) {
 			let result = self.eval_expr(model, &deferred.expr, &deferred.env)?;
 			if !self.is_satisfied(&result) {
@@ -99,6 +104,34 @@ impl RuleEngine {
 		}
 
 		Ok(())
+	}
+
+	/// Run derives to fixed-point (model building phase)
+	pub fn run_derives(&mut self, model: &mut Model, derives: &[Derive]) -> Result<(), RuleError> {
+		self.processed.clear();
+
+		for _ in 0..self.max_iterations {
+			let initial_count = model.statement_count();
+
+			for derive in derives {
+				// Derives use should as default modal (not must)
+				self.current_modal = Some(Modal::Should);
+				self.execute_derive(model, derive)?;
+			}
+
+			let final_count = model.statement_count();
+			if final_count == initial_count {
+				break;
+			}
+		}
+
+		Ok(())
+	}
+
+	fn execute_derive(&mut self, model: &mut Model, derive: &Derive) -> Result<(), RuleError> {
+		let mut env = Env::new();
+		let binding = Vec::new();
+		self.execute_statements(model, &derive.body, &mut env, &derive.name, &binding)
 	}
 
 	fn execute_rule(&mut self, model: &mut Model, rule: &Rule) -> Result<(), RuleError> {
@@ -228,7 +261,7 @@ impl RuleEngine {
 				Ok(StmtResult::Continue)
 			}
 
-			Statement::Must(must_stmt) => {
+			Statement::Modal(must_stmt) => {
 				let result = self.eval_expr(model, &must_stmt.expr, env)?;
 				if !self.is_satisfied(&result) {
 					// Evaluate subject/area now, defer failure creation
@@ -253,7 +286,8 @@ impl RuleEngine {
 					};
 
 					let message = must_stmt.metadata.as_ref().and_then(|m| m.message.clone());
-					let modal = self.current_modal.unwrap_or(Modal::Must);
+					// Use modal from statement, fall back to current_modal (from policy), then Must
+					let modal = must_stmt.modal;
 
 					self.deferred_musts.push(DeferredMust {
 						rule_name: rule_name.to_string(),
@@ -265,10 +299,15 @@ impl RuleEngine {
 						modal,
 					});
 
-					// Guard: skip rest of body
-					return Ok(StmtResult::Guard);
+					// Guard behavior depends on modal:
+					// - must/should: skip rest of body
+					// - may: continue execution
+					if modal == Modal::May {
+						return Ok(StmtResult::Continue);
+					} else {
+						return Ok(StmtResult::Guard);
+					}
 				}
-				// If must passed, continue to next statements
 				Ok(StmtResult::Continue)
 			}
 		}
@@ -615,7 +654,7 @@ impl RuleEngine {
 				// Find matching arm
 				for arm in &match_expr.arms {
 					let matches = arm.patterns.iter().any(|pattern| match pattern {
-						MatchPattern::Wildcard => true,
+						MatchPattern::Else => true,
 						MatchPattern::Variant(name) => &value_str == name,
 					});
 

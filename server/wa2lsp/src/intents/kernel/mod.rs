@@ -15,7 +15,7 @@ use std::path::Path;
 use tower_lsp::lsp_types::Diagnostic;
 use url::Url;
 
-use crate::intents::kernel::ast::{Modal, Policy, Rule};
+use crate::intents::kernel::ast::{Derive, Modal, Policy, QualifiedName, Rule};
 use crate::intents::kernel::loader::Loader;
 use crate::intents::model::{Model, NAMESPACE_TYPE};
 use crate::intents::vendor::{DocumentFormat, Method, Vendor, get_projector};
@@ -64,7 +64,10 @@ pub struct Kernel {
 	source_path: Option<std::path::PathBuf>,
 	model: Model,
 	rules: Vec<Rule>,
+	derives: Vec<Derive>,
 	policies: Vec<Policy>,
+	profiles: HashMap<String, Vec<QualifiedName>>,
+	selected_profile: Option<String>,
 }
 
 impl Default for Kernel {
@@ -98,6 +101,7 @@ impl Kernel {
 					.framework_path(&cwd)
 					.and_then(|p| p.canonicalize().ok());
 
+				// Case 1: entry specified - load user's file
 				if let Some(entry_path) = config.entry_path(&cwd) {
 					if entry_path.exists() {
 						eprintln!("WA2: Kernel loading from {:?}", entry_path);
@@ -116,7 +120,10 @@ impl Kernel {
 						);
 					}
 				} else {
-					eprintln!("WA2: No entry specified in config, using embedded bootstrap");
+					// Case 2: no entry - use framework with profile from config (or default)
+					let profile = config.profile().unwrap_or("default").to_string();
+					eprintln!("WA2: No entry specified, using profile '{}'", profile);
+					return Self::bootstrap_with_profile(framework_root.as_deref(), Some(profile));
 				}
 			}
 		}
@@ -137,7 +144,10 @@ impl Kernel {
 		// Bootstrap model with minimal Rust primitives
 		let mut model = Model::bootstrap();
 		let mut all_rules = Vec::new();
+		let mut all_derives = Vec::new();
 		let mut all_policies = Vec::new();
+		let mut all_profiles: HashMap<String, Vec<QualifiedName>> = HashMap::new();
+		let mut selected_profile = None;
 
 		// Load minimal bootstrap first (just _internal namespace)
 		Self::load_source_into(
@@ -145,7 +155,10 @@ impl Kernel {
 			EMBEDDED_BOOTSTRAP,
 			"_internal",
 			&mut all_rules,
+			&mut all_derives,
 			&mut all_policies,
+			&mut all_profiles,
+			&mut selected_profile,
 		)?;
 
 		// Determine loader root (framework root or entry's parent)
@@ -171,15 +184,38 @@ impl Kernel {
 				.map_err(|e| format!("Lower error in {:?}: {}", file.path, e.message))?;
 
 			all_rules.extend(result.rules);
+			all_derives.extend(result.derives);
 			all_policies.extend(result.policies);
+
+			// Merge profiles additively
+			for profile in result.profiles {
+				let profile_name = profile.name.to_string();
+				all_profiles
+					.entry(profile_name)
+					.or_default()
+					.extend(profile.policies);
+			}
+
+			// Last selection wins (entry file should be last)
+			if let Some(selection) = result.selected_profile {
+				selected_profile = Some(selection.to_string());
+			}
 		}
 
-		Ok(Self {
+		let kernel = Self {
 			source_path: Some(entry_path.to_path_buf()),
 			model,
 			rules: all_rules,
+			derives: all_derives,
 			policies: all_policies,
-		})
+			profiles: all_profiles,
+			selected_profile,
+		};
+
+		// Validate profile and policy references
+		kernel.validate()?;
+
+		Ok(kernel)
 	}
 
 	/// Bootstrap using embedded framework files
@@ -188,7 +224,10 @@ impl Kernel {
 
 		let mut model = Model::bootstrap();
 		let mut all_rules = Vec::new();
+		let mut all_derives = Vec::new();
 		let mut all_policies = Vec::new();
+		let mut all_profiles: HashMap<String, Vec<QualifiedName>> = HashMap::new();
+		let mut selected_profile = None;
 
 		// Load in dependency order
 		let sources = [
@@ -206,7 +245,10 @@ impl Kernel {
 				source,
 				namespace,
 				&mut all_rules,
+				&mut all_derives,
 				&mut all_policies,
+				&mut all_profiles,
+				&mut selected_profile,
 			) {
 				eprintln!("WA2: Failed to load embedded {}: {}", namespace, e);
 				panic!("Embedded framework should always load");
@@ -214,22 +256,55 @@ impl Kernel {
 			eprintln!("WA2: Loaded embedded namespace '{}'", namespace);
 		}
 
-		Self {
+		let kernel = Self {
 			source_path: None,
 			model,
 			rules: all_rules,
+			derives: all_derives,
 			policies: all_policies,
+			profiles: all_profiles,
+			selected_profile,
+		};
+
+		// Validate - panic on embedded since it should always be valid
+		if let Err(e) = kernel.validate() {
+			panic!("Embedded framework validation failed: {}", e);
 		}
+
+		kernel
 	}
 
-	/// Load a source string into the model
+	/// Bootstrap with framework and explicit profile selection
+	fn bootstrap_with_profile(framework_root: Option<&Path>, profile: Option<String>) -> Self {
+		// For now, use embedded framework
+		// TODO: Load from framework_root if provided
+		let mut kernel = Self::bootstrap_embedded();
+
+		// Override profile selection
+		if let Some(p) = profile {
+			kernel.selected_profile = Some(p);
+		}
+
+		// Re-validate with new profile selection
+		if let Err(e) = kernel.validate() {
+			eprintln!("WA2: Profile validation failed: {}", e);
+			// Fall back to no profile selection
+			kernel.selected_profile = None;
+		}
+
+		kernel
+	}
+
 	/// Load a source string into the model
 	fn load_source_into(
 		model: &mut Model,
 		source: &str,
 		namespace_context: &str,
 		rules: &mut Vec<Rule>,
+		derives: &mut Vec<Derive>,
 		policies: &mut Vec<Policy>,
+		profiles: &mut HashMap<String, Vec<QualifiedName>>,
+		selected_profile: &mut Option<String>,
 	) -> Result<(), String> {
 		// Ensure namespace exists BEFORE parsing so resolver knows about it
 		model
@@ -248,7 +323,23 @@ impl Kernel {
 			.map_err(|e| format!("Lower error: {}", e.message))?;
 
 		rules.extend(result.rules);
+		derives.extend(result.derives);
 		policies.extend(result.policies);
+
+		// Merge profiles additively
+		for profile in result.profiles {
+			let profile_name = profile.name.to_string();
+			profiles
+				.entry(profile_name)
+				.or_default()
+				.extend(profile.policies);
+		}
+
+		// Update selection if present
+		if let Some(selection) = result.selected_profile {
+			*selected_profile = Some(selection.to_string());
+		}
+
 		Ok(())
 	}
 
@@ -288,6 +379,7 @@ impl Kernel {
 		method: Method,
 	) -> Result<AnalysisResult, Vec<Diagnostic>> {
 		let mut model = self.model.clone();
+		let derives = self.derives.clone();
 		let rules = self.rules.clone();
 
 		let projector = get_projector(vendor, method);
@@ -298,7 +390,7 @@ impl Kernel {
 
 		let mut engine = RuleEngine::new();
 		engine
-			.run_with_modals(&mut model, &rules, &rule_modals)
+			.run_with_modals(&mut model, &derives, &rules, &rule_modals)
 			.map_err(|e| vec![Kernel::rule_error_to_diagnostic(&e)])?;
 
 		let failures = self.collect_failures(&model);
@@ -360,10 +452,44 @@ impl Kernel {
 			..Default::default()
 		}
 	}
+
+	/// Validate profile selections and policy references
+	fn validate(&self) -> Result<(), String> {
+		// Validate selected profile exists
+		if let Some(ref profile_name) = self.selected_profile {
+			if !self.profiles.contains_key(profile_name) {
+				return Err(format!(
+					"selected profile '{}' is not declared; available profiles: {:?}",
+					profile_name,
+					self.profiles.keys().collect::<Vec<_>>()
+				));
+			}
+		}
+
+		// Validate policy references in profiles
+		let policy_names: std::collections::HashSet<_> =
+			self.policies.iter().map(|p| p.name.clone()).collect();
+
+		for (profile_name, policy_refs) in &self.profiles {
+			for policy_ref in policy_refs {
+				let policy_name = policy_ref.to_string();
+				if !policy_names.contains(&policy_name) {
+					return Err(format!(
+						"profile '{}' references unknown policy '{}'; available policies: {:?}",
+						profile_name, policy_name, policy_names
+					));
+				}
+			}
+		}
+
+		Ok(())
+	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::collections::HashMap;
+
 	use crate::intents::kernel::{Kernel, rules::RuleEngine};
 
 	#[test]
@@ -387,8 +513,13 @@ mod tests {
 	fn test_derive_stores_rule() {
 		let kernel = Kernel::bootstrap_embedded();
 		let mut model = kernel.model.clone();
+		let derives = kernel.derives.clone();
 		let rules = kernel.rules.clone();
 
+		eprintln!("Loaded {} derives", derives.len());
+		for derive in &derives {
+			eprintln!("  - {}", derive.name);
+		}
 		eprintln!("Loaded {} rules", rules.len());
 		for rule in &rules {
 			eprintln!("  - {}", rule.name);
@@ -425,7 +556,9 @@ mod tests {
 			.unwrap();
 
 		let mut engine = RuleEngine::new();
-		engine.run(&mut model, &rules).expect("run rules");
+		engine
+			.run_with_modals(&mut model, &derives, &rules, &HashMap::new())
+			.expect("run rules");
 
 		let store_type = model
 			.resolve("core:Store")
@@ -442,5 +575,38 @@ mod tests {
 		let children = model.children(workload);
 		let store_in_children = children.iter().any(|&c| model.has_type(c, store_type));
 		assert!(store_in_children, "Store should be child of workload");
+	}
+
+	#[test]
+	fn test_profile_merging() {
+		let kernel = Kernel::bootstrap_embedded();
+
+		// core:default profile should exist
+		assert!(kernel.profiles.contains_key("core:default"));
+
+		// Should contain data policies
+		let default_policies = &kernel.profiles["core:default"];
+		let policy_names: Vec<_> = default_policies.iter().map(|p| p.to_string()).collect();
+		assert!(policy_names.contains(&"data:protect_critical_data".to_string()));
+	}
+
+	#[test]
+	fn test_selected_profile() {
+		let kernel = Kernel::bootstrap_embedded();
+
+		// quickstart selects core:default
+		assert_eq!(kernel.selected_profile, Some("core:default".to_string()));
+	}
+
+	#[test]
+	fn test_derives_loaded() {
+		let kernel = Kernel::bootstrap_embedded();
+
+		// Should have derives from cfn.wa2 and quickstart.wa2
+		let derive_names: Vec<_> = kernel.derives.iter().map(|d| d.name.as_str()).collect();
+
+		assert!(derive_names.contains(&"aws:cfn:stores"));
+		assert!(derive_names.contains(&"aws:cfn:runs"));
+		assert!(derive_names.contains(&"aws:cfn:moves"));
 	}
 }

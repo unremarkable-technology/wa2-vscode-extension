@@ -208,7 +208,9 @@ fn parse_item(p: &mut Parser) -> Result<Item, ParseError> {
 		Some(Token::KwPredicate) => parse_predicate(p).map(Item::Predicate),
 		Some(Token::KwInstance) => parse_instance(p).map(Item::Instance),
 		Some(Token::KwRule) => parse_rule(p).map(Item::Rule),
+		Some(Token::KwDerive) => parse_derive(p).map(Item::Derive),
 		Some(Token::KwPolicy) => parse_policy(p).map(Item::Policy),
+		Some(Token::KwProfile) => parse_profile_or_selection(p),
 		other => Err(ParseError {
 			message: format!("expected item, got {:?}", other),
 			span: p.span.clone(),
@@ -278,6 +280,38 @@ fn parse_policy_binding(p: &mut Parser) -> Result<PolicyBinding, ParseError> {
 		rule_name,
 		span: start..p.span.end,
 	})
+}
+
+fn parse_profile_or_selection(p: &mut Parser) -> Result<Item, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwProfile)?;
+	let name = parse_qualified_name(p)?;
+
+	// Check if this is a declaration (has brace) or selection (bare)
+	if p.at(&Token::LBrace) {
+		p.advance();
+
+		let mut policies = Vec::new();
+		while !p.at(&Token::RBrace) {
+			p.expect(Token::KwPolicy)?;
+			let policy_name = parse_qualified_name(p)?;
+			policies.push(policy_name);
+		}
+
+		p.expect(Token::RBrace)?;
+
+		Ok(Item::Profile(Profile {
+			name,
+			policies,
+			span: start..p.span.end,
+		}))
+	} else {
+		// Bare profile selection
+		Ok(Item::ProfileSelection(ProfileSelection {
+			name,
+			span: start..p.span.end,
+		}))
+	}
 }
 
 fn parse_annotations(p: &mut Parser) -> Result<Vec<Annotation>, ParseError> {
@@ -494,12 +528,34 @@ fn parse_rule(p: &mut Parser) -> Result<Rule, ParseError> {
 	})
 }
 
+fn parse_derive(p: &mut Parser) -> Result<Derive, ParseError> {
+	let start = p.span.start;
+	p.expect(Token::KwDerive)?;
+	let name = p.expect_ident()?;
+	p.expect(Token::LBrace)?;
+
+	let mut body = Vec::new();
+	while !p.at(&Token::RBrace) {
+		body.push(parse_statement(p)?);
+	}
+
+	p.expect(Token::RBrace)?;
+
+	Ok(Derive {
+		name,
+		body,
+		span: start..p.span.end,
+	})
+}
+
 fn parse_statement(p: &mut Parser) -> Result<Statement, ParseError> {
 	match &p.current {
 		Some(Token::KwLet) => parse_let_stmt(p).map(Statement::Let),
 		Some(Token::KwFor) => parse_for_stmt(p).map(Statement::For),
 		Some(Token::KwIf) => parse_if_stmt(p).map(Statement::If),
-		Some(Token::KwMust) => parse_must_stmt(p).map(Statement::Must),
+		Some(Token::KwMust) => parse_modal_stmt(p, Modal::Must).map(Statement::Modal),
+		Some(Token::KwShould) => parse_modal_stmt(p, Modal::Should).map(Statement::Modal),
+		Some(Token::KwMay) => parse_modal_stmt(p, Modal::May).map(Statement::Modal),
 		Some(Token::KwAdd) => parse_add_stmt_keyword(p).map(Statement::Add),
 		Some(Token::At) => parse_assert_stmt(p).map(Statement::Assert),
 		other => Err(ParseError {
@@ -507,6 +563,27 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, ParseError> {
 			span: p.span.clone(),
 		}),
 	}
+}
+
+fn parse_modal_stmt(p: &mut Parser, modal: Modal) -> Result<ModalStmt, ParseError> {
+	let start = p.span.start;
+	// Consume the modal keyword (must/should/may)
+	p.advance();
+	let expr = parse_expr(p)?;
+
+	// Optional metadata block
+	let metadata = if p.at(&Token::LBrace) {
+		Some(parse_must_metadata(p)?)
+	} else {
+		None
+	};
+
+	Ok(ModalStmt {
+		modal,
+		expr,
+		metadata,
+		span: start..p.span.end,
+	})
 }
 
 fn parse_for_stmt(p: &mut Parser) -> Result<ForStmt, ParseError> {
@@ -583,25 +660,6 @@ fn parse_add_stmt_keyword(p: &mut Parser) -> Result<AddStmt, ParseError> {
 		subject,
 		predicate,
 		object,
-		span: start..p.span.end,
-	})
-}
-
-fn parse_must_stmt(p: &mut Parser) -> Result<MustStmt, ParseError> {
-	let start = p.span.start;
-	p.expect(Token::KwMust)?;
-	let expr = parse_expr(p)?;
-
-	// Optional metadata block
-	let metadata = if p.at(&Token::LBrace) {
-		Some(parse_must_metadata(p)?)
-	} else {
-		None
-	};
-
-	Ok(MustStmt {
-		expr,
-		metadata,
 		span: start..p.span.end,
 	})
 }
@@ -876,15 +934,15 @@ fn parse_match_arm(p: &mut Parser) -> Result<MatchArm, ParseError> {
 }
 
 fn parse_match_pattern(p: &mut Parser) -> Result<MatchPattern, ParseError> {
-	if p.at(&Token::Underscore) {
+	if p.at(&Token::KwElse) {
 		p.advance();
-		Ok(MatchPattern::Wildcard)
+		Ok(MatchPattern::Else)
 	} else if p.at_ident() {
 		let name = p.expect_ident()?;
 		Ok(MatchPattern::Variant(name))
 	} else {
 		Err(ParseError {
-			message: format!("expected pattern (identifier or _), got {:?}", p.current),
+			message: format!("expected pattern (identifier or else), got {:?}", p.current),
 			span: p.span.clone(),
 		})
 	}
@@ -1703,6 +1761,164 @@ use data
 		assert_eq!(ast.items.len(), 4);
 		for item in &ast.items {
 			assert!(matches!(item, Item::Use(_)));
+		}
+	}
+
+	#[test]
+	fn parse_derive() {
+		let src = r#"
+derive stores {
+	let x = query(aws:cfn:Resource)
+	for s in x {
+		let node = add(_, wa2:type, core:Store)
+	}
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let resolver: Resolver =
+			Box::new(|name| matches!(name, "aws" | "aws:cfn" | "core" | "wa2"));
+		let ast = parse_with_resolver(source.lexer(), resolver).unwrap();
+
+		assert_eq!(ast.items.len(), 1);
+		match &ast.items[0] {
+			Item::Derive(d) => {
+				assert_eq!(d.name, "stores");
+				assert_eq!(d.body.len(), 2);
+			}
+			_ => panic!("expected derive"),
+		}
+	}
+
+	#[test]
+	fn parse_profile_declaration() {
+		let src = r#"
+profile default {
+	policy protect_critical_data
+	policy classify_data
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		assert_eq!(ast.items.len(), 1);
+		match &ast.items[0] {
+			Item::Profile(p) => {
+				assert_eq!(p.name.name, "default");
+				assert_eq!(p.policies.len(), 2);
+				assert_eq!(p.policies[0].name, "protect_critical_data");
+				assert_eq!(p.policies[1].name, "classify_data");
+			}
+			_ => panic!("expected profile"),
+		}
+	}
+
+	#[test]
+	fn parse_profile_selection() {
+		let src = r#"profile default"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		assert_eq!(ast.items.len(), 1);
+		match &ast.items[0] {
+			Item::ProfileSelection(s) => {
+				assert_eq!(s.name.name, "default");
+			}
+			_ => panic!("expected profile selection"),
+		}
+	}
+
+	#[test]
+	fn parse_profile_qualified_selection() {
+		let src = r#"
+namespace core {}
+profile core:default
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		assert_eq!(ast.items.len(), 2);
+		match &ast.items[1] {
+			Item::ProfileSelection(s) => {
+				assert_eq!(s.name.namespace, Some("core".to_string()));
+				assert_eq!(s.name.name, "default");
+			}
+			_ => panic!("expected profile selection"),
+		}
+	}
+
+	#[test]
+	fn parse_should_statement() {
+		let src = r#"
+rule test {
+	should query(core:Store) {
+		subject: x,
+		message: "warning message"
+	}
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		match &ast.items[0] {
+			Item::Rule(r) => match &r.body[0] {
+				Statement::Modal(m) => {
+					assert_eq!(m.modal, Modal::Should);
+				}
+				_ => panic!("expected must statement"),
+			},
+			_ => panic!("expected rule"),
+		}
+	}
+
+	#[test]
+	fn parse_may_statement() {
+		let src = r#"
+rule test {
+	may query(core:Store) {
+		message: "optional check"
+	}
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		match &ast.items[0] {
+			Item::Rule(r) => match &r.body[0] {
+				Statement::Modal(m) => {
+					assert_eq!(m.modal, Modal::May);
+				}
+				_ => panic!("expected must statement"),
+			},
+			_ => panic!("expected rule"),
+		}
+	}
+
+	#[test]
+	fn parse_match_with_else() {
+		let src = r#"
+rule test {
+	let x = match query(v/value) {
+		Critical => true,
+		else => false
+	}
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		match &ast.items[0] {
+			Item::Rule(r) => match &r.body[0] {
+				Statement::Let(l) => match &l.value {
+					Expr::Match(m) => {
+						assert_eq!(m.arms.len(), 2);
+						assert!(matches!(m.arms[0].patterns[0], MatchPattern::Variant(_)));
+						assert!(matches!(m.arms[1].patterns[0], MatchPattern::Else));
+					}
+					_ => panic!("expected match"),
+				},
+				_ => panic!("expected let"),
+			},
+			_ => panic!("expected rule"),
 		}
 	}
 }

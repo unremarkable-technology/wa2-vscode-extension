@@ -60,6 +60,10 @@ pub enum Token {
 	KwStrict,
 	#[token("lazy")]
 	KwLazy,
+	#[token("derive")]
+	KwDerive,
+	#[token("profile")]
+	KwProfile,
 
 	// Symbols
 	#[token("@")]

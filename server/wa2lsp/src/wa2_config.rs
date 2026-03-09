@@ -17,6 +17,8 @@ pub struct ProjectConfig {
 	pub name: String,
 	#[serde(default)]
 	pub entry: Option<String>,
+	#[serde(default)]
+	pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,20 +27,31 @@ pub struct FrameworkConfig {
 }
 
 impl Wa2Config {
-	/// Try to load wa2.toml from the given directory
+	/// Load config from a directory, returns None if no wa2.toml found
 	pub fn load(dir: &Path) -> Option<Self> {
 		let config_path = dir.join("wa2.toml");
-		if !config_path.exists() {
+		let contents = fs::read_to_string(&config_path).ok()?;
+		let config: Self = toml::from_str(&contents).ok()?;
+
+		// Validate: cannot have both entry and profile
+		if config.project.entry.is_some() && config.project.profile.is_some() {
+			eprintln!(
+				"WA2: Error in wa2.toml: cannot specify both 'entry' and 'profile' in [project]"
+			);
 			return None;
 		}
 
-		let contents = fs::read_to_string(&config_path).ok()?;
-		toml::from_str(&contents).ok()
+		Some(config)
 	}
 
-	/// Resolve the entry file path relative to the config directory
+	/// Get entry path if specified
 	pub fn entry_path(&self, base_dir: &Path) -> Option<PathBuf> {
 		self.project.entry.as_ref().map(|e| base_dir.join(e))
+	}
+
+	/// Get profile if specified in config
+	pub fn profile(&self) -> Option<&str> {
+		self.project.profile.as_deref()
 	}
 
 	/// Resolve the framework path relative to the config directory

@@ -15,9 +15,13 @@ pub struct Lower<'m> {
 }
 
 /// Result of lowering AST
+#[derive(Debug)]
 pub struct LowerResult {
 	pub rules: Vec<Rule>,
+	pub derives: Vec<Derive>,
 	pub policies: Vec<Policy>,
+	pub profiles: Vec<Profile>,
+	pub selected_profile: Option<QualifiedName>,
 }
 
 impl<'m> Lower<'m> {
@@ -59,20 +63,39 @@ impl<'m> Lower<'m> {
 	/// Lower AST to model, returns rules for later execution
 	pub fn lower(&mut self, ast: &Ast) -> Result<LowerResult, LowerError> {
 		let mut rules = Vec::new();
+		let mut derives = Vec::new();
 		let mut policies = Vec::new();
+		let mut profiles = Vec::new();
+		let mut selected_profile = None;
 
 		for item in &ast.items {
-			self.lower_item(item, &mut rules, &mut policies)?;
+			self.lower_item(
+				item,
+				&mut rules,
+				&mut derives,
+				&mut policies,
+				&mut profiles,
+				&mut selected_profile,
+			)?;
 		}
 
-		Ok(LowerResult { rules, policies })
+		Ok(LowerResult {
+			rules,
+			derives,
+			policies,
+			profiles,
+			selected_profile,
+		})
 	}
 
 	fn lower_item(
 		&mut self,
 		item: &Item,
 		rules: &mut Vec<Rule>,
+		derives: &mut Vec<Derive>,
 		policies: &mut Vec<Policy>,
+		profiles: &mut Vec<Profile>,
+		selected_profile: &mut Option<QualifiedName>,
 	) -> Result<(), LowerError> {
 		match item {
 			Item::Namespace(ns) => {
@@ -84,15 +107,14 @@ impl<'m> Lower<'m> {
 				})?;
 
 				for inner in &ns.items {
-					self.lower_item(inner, rules, policies)?;
+					self.lower_item(inner, rules, derives, policies, profiles, selected_profile)?;
 				}
 
 				self.namespace_stack.pop();
 			}
 
 			Item::Use(_) => {
-				// TODO: Use statements are collected but not processed here
-				// Resolution happens in the multi-file loader (Phase 4)
+				// Use statements are handled by the multi-file loader
 			}
 
 			Item::Type(type_decl) => {
@@ -103,12 +125,10 @@ impl<'m> Lower<'m> {
 						message: format!("failed to create type '{}': {}", fqn, e),
 					})?;
 
-				// Get the entity id for annotation lowering
 				let entity_id = self.model.resolve(&fqn).ok_or_else(|| LowerError {
 					message: format!("failed to resolve type '{}' after creation", fqn),
 				})?;
 
-				// Lower @#doc annotations to predicates
 				self.lower_doc_annotations(entity_id, &type_decl.annotations)?;
 			}
 
@@ -120,12 +140,10 @@ impl<'m> Lower<'m> {
 						message: format!("failed to create struct '{}': {}", fqn, e),
 					})?;
 
-				// Get the entity id for annotation lowering
 				let entity_id = self.model.resolve(&fqn).ok_or_else(|| LowerError {
 					message: format!("failed to resolve struct '{}' after creation", fqn),
 				})?;
 
-				// Lower @#doc annotations to predicates
 				self.lower_doc_annotations(entity_id, &struct_decl.annotations)?;
 
 				for field in &struct_decl.fields {
@@ -146,12 +164,10 @@ impl<'m> Lower<'m> {
 						message: format!("failed to create enum '{}': {}", fqn, e),
 					})?;
 
-				// Get the entity id for annotation lowering
 				let entity_id = self.model.resolve(&fqn).ok_or_else(|| LowerError {
 					message: format!("failed to resolve enum '{}' after creation", fqn),
 				})?;
 
-				// Lower @#doc annotations to predicates
 				self.lower_doc_annotations(entity_id, &enum_decl.annotations)?;
 
 				for variant in &enum_decl.variants {
@@ -195,14 +211,67 @@ impl<'m> Lower<'m> {
 				rules.push(qualified_rule);
 			}
 
+			Item::Derive(derive) => {
+				// Validate: no must allowed in derive blocks
+				Self::validate_derive_body(&derive.body, &derive.name)?;
+
+				let mut qualified_derive = derive.clone();
+				let qualified_name = self.qualify(&derive.name);
+				qualified_derive.name = qualified_name;
+				derives.push(qualified_derive);
+			}
+
 			Item::Policy(policy) => {
 				let mut qualified_policy = policy.clone();
 				let qualified_name = self.qualify(&policy.name);
 				qualified_policy.name = qualified_name;
 				policies.push(qualified_policy);
 			}
+
+			Item::Profile(profile) => {
+				let mut qualified_profile = profile.clone();
+				// Qualify the profile name
+				let ns = self.current_namespace();
+				if qualified_profile.name.namespace.is_none() && !ns.is_empty() {
+					qualified_profile.name.namespace = Some(ns);
+				}
+				profiles.push(qualified_profile);
+			}
+
+			Item::ProfileSelection(selection) => {
+				*selected_profile = Some(selection.name.clone());
+			}
 		}
 
+		Ok(())
+	}
+
+	/// Validate that derive body contains no must statements (only should/may)
+	fn validate_derive_body(stmts: &[Statement], derive_name: &str) -> Result<(), LowerError> {
+		for stmt in stmts {
+			match stmt {
+				Statement::Modal(must_stmt) => {
+					if must_stmt.modal == Modal::Must {
+						return Err(LowerError {
+							message: format!(
+								"derive '{}' contains 'must' statement at {:?}; use 'should' or 'may' instead",
+								derive_name, must_stmt.span
+							),
+						});
+					}
+				}
+				Statement::For(for_stmt) => {
+					Self::validate_derive_body(&for_stmt.body, derive_name)?;
+				}
+				Statement::If(if_stmt) => {
+					Self::validate_derive_body(&if_stmt.then_body, derive_name)?;
+					if let Some(ref else_body) = if_stmt.else_body {
+						Self::validate_derive_body(else_body, derive_name)?;
+					}
+				}
+				_ => {}
+			}
+		}
 		Ok(())
 	}
 
@@ -400,5 +469,44 @@ mod tests {
 			.resolve("core:workload")
 			.expect("core:workload should exist");
 		assert!(model.has_type(workload_instance, workload));
+	}
+
+	#[test]
+	fn reject_must_in_derive() {
+		let src = r#"
+derive bad {
+	must query(core:Store)
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		let mut model = Model::bootstrap();
+		model.ensure_namespace("test").unwrap();
+		let mut lower = Lower::new(&mut model, "test").unwrap();
+
+		let result = lower.lower(&ast);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().message.contains("must"));
+	}
+
+	#[test]
+	fn allow_should_in_derive() {
+		let src = r#"
+derive good {
+	should query(core:Store)
+}
+"#;
+		let source = Wa2Source::from_str(src);
+		let ast = parse(source.lexer()).unwrap();
+
+		let mut model = Model::bootstrap();
+		model.ensure_namespace("core").unwrap();
+		model.ensure_namespace("test").unwrap();
+		let mut lower = Lower::new(&mut model, "test").unwrap();
+
+		let result = lower.lower(&ast);
+		assert!(result.is_ok());
+		assert_eq!(result.unwrap().derives.len(), 1);
 	}
 }

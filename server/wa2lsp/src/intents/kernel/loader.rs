@@ -386,4 +386,51 @@ enum Node { Store }
 
 		assert!(matches!(err, LoadError::Resolve(_, _)));
 	}
+
+	#[test]
+	fn load_order_matches_use_order() {
+		let dir = TempDir::new().unwrap();
+
+		// Create files with specific use order
+		fs::create_dir_all(dir.path().join("alpha")).unwrap();
+		fs::create_dir_all(dir.path().join("beta")).unwrap();
+		fs::create_dir_all(dir.path().join("gamma")).unwrap();
+
+		fs::write(dir.path().join("alpha/alpha.wa2"), "type A").unwrap();
+
+		fs::write(dir.path().join("beta/beta.wa2"), "use alpha\ntype B").unwrap();
+
+		fs::write(
+			dir.path().join("gamma/gamma.wa2"),
+			"use alpha\nuse beta\ntype C",
+		)
+		.unwrap();
+
+		fs::write(
+			dir.path().join("entry.wa2"),
+			"use gamma\nuse beta\nuse alpha\ntype Entry",
+		)
+		.unwrap();
+
+		let model = Model::bootstrap();
+		let mut loader = Loader::new(dir.path());
+		let files = loader
+			.load_entry(&dir.path().join("entry.wa2"), &model)
+			.unwrap();
+
+		let names: Vec<_> = files
+			.iter()
+			.map(|f| {
+				f.inferred_namespace
+					.clone()
+					.unwrap_or_else(|| "entry".to_string())
+			})
+			.collect();
+
+		// gamma is first use in entry, so its deps load first
+		// gamma uses alpha then beta, so: alpha, beta, gamma
+		// then entry's remaining uses (beta, alpha) are already loaded
+		// finally entry itself
+		assert_eq!(names, vec!["alpha", "beta", "gamma", "entry"]);
+	}
 }

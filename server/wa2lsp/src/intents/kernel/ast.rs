@@ -15,14 +15,17 @@ pub struct Ast {
 #[derive(Debug, Clone)]
 pub enum Item {
 	Namespace(Namespace),
-   Use(Use),
+	Use(Use),
 	Struct(Struct),
 	Enum(Enum),
 	Type(TypeDecl),
 	Predicate(Predicate),
 	Instance(Instance),
 	Rule(Rule),
+	Derive(Derive),
 	Policy(Policy),
+	Profile(Profile),
+	ProfileSelection(ProfileSelection),
 }
 
 /// Namespace block
@@ -153,7 +156,7 @@ pub enum Statement {
 	Add(AddStmt),
 	For(ForStmt),
 	Assert(AssertStmt),
-	Must(MustStmt),
+	Modal(ModalStmt),
 	If(IfStmt),
 }
 
@@ -192,6 +195,14 @@ pub struct IfStmt {
 	pub span: Span,
 }
 
+/// Derive declaration - model building, no must allowed
+#[derive(Debug, Clone)]
+pub struct Derive {
+	pub name: String,
+	pub body: Vec<Statement>,
+	pub span: Span,
+}
+
 /// Assert statement: @#assert(expr)
 #[derive(Debug, Clone)]
 pub struct AssertStmt {
@@ -199,9 +210,10 @@ pub struct AssertStmt {
 	pub span: Span,
 }
 
-/// Must statement: must query(expr) { subject: x, area: Y, message: "..." }
+/// Must/should/may statement with modal
 #[derive(Debug, Clone)]
-pub struct MustStmt {
+pub struct ModalStmt {
+	pub modal: Modal,
 	pub expr: Expr,
 	pub metadata: Option<MustMetadata>,
 	pub span: Span,
@@ -324,8 +336,8 @@ pub struct MatchArm {
 pub enum MatchPattern {
 	/// Named variant: MissionCritical
 	Variant(String),
-	/// Wildcard: _
-	Wildcard,
+	/// Catch-all: else
+	Else,
 }
 
 /// Modal verb for policy bindings
@@ -349,5 +361,20 @@ pub struct PolicyBinding {
 pub struct Policy {
 	pub name: String,
 	pub bindings: Vec<PolicyBinding>,
+	pub span: Span,
+}
+
+/// Profile declaration - bundles policies
+#[derive(Debug, Clone)]
+pub struct Profile {
+	pub name: QualifiedName,
+	pub policies: Vec<QualifiedName>,
+	pub span: Span,
+}
+
+/// Profile selection - bare profile name
+#[derive(Debug, Clone)]
+pub struct ProfileSelection {
+	pub name: QualifiedName,
 	pub span: Span,
 }
