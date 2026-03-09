@@ -9,7 +9,7 @@ mod query;
 mod resolver;
 mod rules;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use tower_lsp::lsp_types::Diagnostic;
@@ -131,6 +131,14 @@ impl Kernel {
 		Self::bootstrap_embedded()
 	}
 
+	/// Log the selected profile
+	fn log_selected_profile(&self) {
+		match &self.selected_profile {
+			Some(profile) => eprintln!("WA2: Selected profile '{}'", profile),
+			None => eprintln!("WA2: No profile selected"),
+		}
+	}
+
 	/// Load kernel from a wa2 file (simple case, no framework)
 	pub fn from_file(path: &Path) -> Result<Self, String> {
 		Self::from_file_with_framework(path, None)
@@ -214,6 +222,7 @@ impl Kernel {
 
 		// Validate profile and policy references
 		kernel.validate()?;
+		kernel.log_selected_profile();
 
 		Ok(kernel)
 	}
@@ -270,6 +279,7 @@ impl Kernel {
 		if let Err(e) = kernel.validate() {
 			panic!("Embedded framework validation failed: {}", e);
 		}
+		kernel.log_selected_profile();
 
 		kernel
 	}
@@ -291,6 +301,7 @@ impl Kernel {
 			// Fall back to no profile selection
 			kernel.selected_profile = None;
 		}
+		kernel.log_selected_profile();
 
 		kernel
 	}
@@ -343,13 +354,30 @@ impl Kernel {
 		Ok(())
 	}
 
-	/// Build a map from rule name to its modal (from policy bindings)
+	/// Build a map from rule name to its modal (from selected profile's policies only)
 	fn build_rule_modals(&self) -> HashMap<String, Modal> {
 		let mut modals = HashMap::new();
+
+		// Get policies from selected profile only
+		let active_policy_names: HashSet<String> =
+			if let Some(ref profile_name) = self.selected_profile {
+				self.profiles
+					.get(profile_name)
+					.map(|policies| policies.iter().map(|p| p.to_string()).collect())
+					.unwrap_or_default()
+			} else {
+				// No profile selected - no policies active
+				HashSet::new()
+			};
+
 		for policy in &self.policies {
+			// Skip policies not in the selected profile
+			if !active_policy_names.contains(&policy.name) {
+				continue;
+			}
+
 			for binding in &policy.bindings {
 				let rule_name = binding.rule_name.to_string();
-				// If rule appears in multiple policies, use strictest modal
 				let new_modal = binding.modal;
 				modals
 					.entry(rule_name)
@@ -380,17 +408,24 @@ impl Kernel {
 	) -> Result<AnalysisResult, Vec<Diagnostic>> {
 		let mut model = self.model.clone();
 		let derives = self.derives.clone();
-		let rules = self.rules.clone();
 
 		let projector = get_projector(vendor, method);
 		projector.project_into(&mut model, text, uri, format)?;
 
-		// Build rule→modal map from policies
+		// Build rule→modal map from selected profile's policies
 		let rule_modals = self.build_rule_modals();
+
+		// Only run rules that are in the selected profile
+		let active_rules: Vec<Rule> = self
+			.rules
+			.iter()
+			.filter(|r| rule_modals.contains_key(&r.name))
+			.cloned()
+			.collect();
 
 		let mut engine = RuleEngine::new();
 		engine
-			.run_with_modals(&mut model, &derives, &rules, &rule_modals)
+			.run_with_modals(&mut model, &derives, &active_rules, &rule_modals)
 			.map_err(|e| vec![Kernel::rule_error_to_diagnostic(&e)])?;
 
 		let failures = self.collect_failures(&model);

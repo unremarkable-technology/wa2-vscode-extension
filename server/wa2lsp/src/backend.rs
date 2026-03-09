@@ -183,7 +183,7 @@ impl LanguageServer for Backend {
 		self.client.log_message(MessageType::INFO, message).await;
 	}
 
-	/// document changed
+	/// an OPEN document is changed
 	/// capture the event, but do no work on main thread
 	async fn did_change(&self, params: DidChangeTextDocumentParams) {
 		let uri = params.text_document.uri;
@@ -203,6 +203,39 @@ impl LanguageServer for Backend {
 
 		let message = format!("doc_change: {}", uri);
 		self.client.log_message(MessageType::INFO, message).await;
+	}
+
+	//// when files matching watcher patterns change on disk
+	async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+		for change in params.changes {
+			let path = change.uri.path();
+			if path.ends_with("wa2.toml") || path.ends_with(".wa2") {
+				self.client
+					.log_message(
+						MessageType::INFO,
+						format!("WA2: Reloading kernel due to change in {}", path),
+					)
+					.await;
+
+				// forward to core engine (under lock)
+				{
+					let mut engine = self.engine.lock().unwrap();
+					engine.reload_kernel();
+				}
+
+				// Re-analyse all open documents
+				let uris: Vec<Url> = {
+					let engine = self.engine.lock().unwrap();
+					engine.open_document_uris()
+				};
+
+				for uri in uris {
+					self.enqueue_event(&uri);
+				}
+
+				break; // Only need to reload once
+			}
+		}
 	}
 
 	/// document saved, re-run analysis on save
@@ -439,15 +472,29 @@ async fn analyser_loop(
 				Ok(_template) => {
 					// Fast path succeeded with no diagnostics
 					// Run slow path (WA2 guidance)
-               client.log_message(MessageType::INFO, format!("starting slow analysis: {}", uri)).await;
+					client
+						.log_message(
+							MessageType::INFO,
+							format!("starting slow analysis: {}", uri),
+						)
+						.await;
 
 					let wa2_diagnostics = {
 						let mut engine_guard = engine.lock().unwrap();
 						engine_guard.analyse_document_slow(&uri)
 					};
 
-               client.log_message(MessageType::INFO, format!("finished slow analysis: {} ({} diagnostics)", uri, wa2_diagnostics.len())).await;
-               
+					client
+						.log_message(
+							MessageType::INFO,
+							format!(
+								"finished slow analysis: {} ({} diagnostics)",
+								uri,
+								wa2_diagnostics.len()
+							),
+						)
+						.await;
+
 					// Publish WA2 guidance diagnostics
 					if !wa2_diagnostics.is_empty() {
 						let message = format!("doc_analyse_slow: {} (WA2 guidance)", uri);

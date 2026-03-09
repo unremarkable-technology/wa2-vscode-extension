@@ -109,11 +109,11 @@
          "patterns": [
             {
                "name": "keyword.declaration.wa2",
-               "match": "\\b(namespace|struct|enum|type|predicate|rule|policy|instance|governance)\\b"
+               "match": "\\b(namespace|struct|enum|type|predicate|rule|derive|policy|instance|governance|profile|use)\\b"
             },
             {
                "name": "keyword.other.wa2",
-               "match": "\\b(let|must|should|setting)\\b"
+               "match": "\\b(let|must|should|may|setting|as|strict|lazy)\\b"
             }
          ]
       },
@@ -121,7 +121,7 @@
          "patterns": [
             {
                "name": "keyword.control.wa2",
-               "match": "\\b(for|in|if|else|return)\\b"
+               "match": "\\b(for|in|if|else|match|return)\\b"
             }
          ]
       },
@@ -255,6 +255,30 @@
                   },
                   "3": {
                      "name": "entity.name.type.wa2"
+                  }
+               }
+            },
+            {
+               "name": "meta.declaration.derive.wa2",
+               "match": "\\b(derive)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+               "captures": {
+                  "1": {
+                     "name": "keyword.declaration.wa2"
+                  },
+                  "2": {
+                     "name": "entity.name.function.wa2"
+                  }
+               }
+            },
+            {
+               "name": "meta.declaration.profile.wa2",
+               "match": "\\b(profile)\\s+([A-Za-z_][A-Za-z0-9_:]*)",
+               "captures": {
+                  "1": {
+                     "name": "keyword.declaration.wa2"
+                  },
+                  "2": {
+                     "name": "entity.name.type.profile.wa2"
                   }
                }
             }

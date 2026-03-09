@@ -2,80 +2,84 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import {
-	LanguageClient,
-	LanguageClientOptions,
-	ServerOptions,
+   LanguageClient,
+   LanguageClientOptions,
+   ServerOptions,
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-	// Create output channel for extension logs
-	const outputChannel = vscode.window.createOutputChannel('WA2 Extension');
+   // Create output channel for extension logs
+   const outputChannel = vscode.window.createOutputChannel('WA2 Extension');
 
-	// Try bundled binary first, fall back to PATH
-	const binaryName = process.platform === 'win32' ? 'wa2lsp.exe' : 'wa2lsp';
-	const bundledBinary = path.join(context.extensionPath, 'bin', binaryName);
+   // Try bundled binary first, fall back to PATH
+   const binaryName = process.platform === 'win32' ? 'wa2lsp.exe' : 'wa2lsp';
+   const bundledBinary = path.join(context.extensionPath, 'bin', binaryName);
 
-	let serverCommand: string;
-   
-	if (fs.existsSync(bundledBinary)) {
-		serverCommand = bundledBinary;
-		outputChannel.appendLine(`WA2: Using bundled LSP server at ${bundledBinary}`);
-	} else {
-		// Fall back to PATH (for development)
-		serverCommand = binaryName;
-		outputChannel.appendLine(`WA2: Using ${binaryName} from PATH`);
-	}
+   let serverCommand: string;
 
-	// Get workspace root for wa2.toml detection
-	const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-	if (workspaceRoot) {
-		outputChannel.appendLine(`WA2: Workspace root: ${workspaceRoot}`);
-	}
+   if (fs.existsSync(bundledBinary)) {
+      serverCommand = bundledBinary;
+      outputChannel.appendLine(`WA2: Using bundled LSP server at ${bundledBinary}`);
+   } else {
+      // Fall back to PATH (for development)
+      serverCommand = binaryName;
+      outputChannel.appendLine(`WA2: Using ${binaryName} from PATH`);
+   }
 
-	const serverOptions: ServerOptions = {
-		command: serverCommand,
-		args: ['--serve'],
-		options: {
-			cwd: workspaceRoot,
-		},
-	};
+   // Get workspace root for wa2.toml detection
+   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+   if (workspaceRoot) {
+      outputChannel.appendLine(`WA2: Workspace root: ${workspaceRoot}`);
+   }
 
-	const clientOptions: LanguageClientOptions = {
-		documentSelector: [
-			{ language: 'cloudformation-yaml', scheme: 'file' },
-			{ language: 'cloudformation-json', scheme: 'file' },
-		],
-		synchronize: {
-			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{yml,yaml,json,template,cfn}'),
-		},
-	};
+   const serverOptions: ServerOptions = {
+      command: serverCommand,
+      args: ['--serve'],
+      options: {
+         cwd: workspaceRoot,
+      },
+   };
 
-	client = new LanguageClient(
-		'wa2lsp',
-		'WA2 LSP',
-		serverOptions,
-		clientOptions
-	);
+   const clientOptions: LanguageClientOptions = {
+      documentSelector: [
+         { language: 'cloudformation-yaml', scheme: 'file' },
+         { language: 'cloudformation-json', scheme: 'file' },
+      ],
+      synchronize: {
+         fileEvents: [
+            vscode.workspace.createFileSystemWatcher('**/*.{yml,yaml,json,template,cfn}'),
+            vscode.workspace.createFileSystemWatcher('**/wa2.toml'),
+            vscode.workspace.createFileSystemWatcher('**/*.wa2'),
+         ],
+      },
+   };
 
-	// Start the client
-	client.start().then(() => {
-		outputChannel.appendLine('WA2: Language server started successfully');
-	}).catch(err => {
-		outputChannel.appendLine(`WA2: Failed to start language server: ${err.message}`);
-		vscode.window.showErrorMessage(`WA2: Failed to start language server: ${err.message}`);
-	});
+   client = new LanguageClient(
+      'wa2lsp',
+      'WA2 LSP',
+      serverOptions,
+      clientOptions
+   );
 
-	// Properly stop the client on extension deactivation
-	context.subscriptions.push({
-		dispose: () => client?.stop()
-	});
+   // Start the client
+   client.start().then(() => {
+      outputChannel.appendLine('WA2: Language server started successfully');
+   }).catch(err => {
+      outputChannel.appendLine(`WA2: Failed to start language server: ${err.message}`);
+      vscode.window.showErrorMessage(`WA2: Failed to start language server: ${err.message}`);
+   });
+
+   // Properly stop the client on extension deactivation
+   context.subscriptions.push({
+      dispose: () => client?.stop()
+   });
 }
 
 export async function deactivate(): Promise<void> {
-	if (!client) {
-		return;
-	}
-	await client.stop();
+   if (!client) {
+      return;
+   }
+   await client.stop();
 }

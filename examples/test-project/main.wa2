@@ -3,8 +3,43 @@ use aws
 use aws:cfn
 use data
 
-namespace test {
-    rule my_rule {
-        let stores = query(core:Store)
-    }
+namespace my {
+   profile custom_poc {}
+   profile custom_poc
+
+   @#doc(
+		tldr = "xClassify data criticality for protection controls",
+		why = "xCriticality classification drives backup and recovery requirements. Easily recreated data doesn't need backing up, whilst employment records need protection against loss."
+	)
+	enum DataCriticality {
+		Disposable,
+		NonCritical,
+		Important,
+		BusinessCritical,
+		MissionCritical
+	}
+
+	 derive my_rule {
+		  let stores = query(core:Store)
+	 }
+
+	 derive store_criticality_from_tags {
+		let stores = query(core:Store[core:source/aws:cfn:Resource])
+
+		for store in stores {
+			let source = query(store/core:source)
+			let dc_tag = query(source/aws:Tags/*[aws:Key = "DataCriticality"])
+
+			may dc_tag {
+				subject: source,
+				area: my:DataCriticality,
+				message: "Normally we tag this stuff, lets just assume its critical"
+			}
+
+         let evidence = add(_, wa2:type, core:Evidence)
+			add(store, wa2:contains, evidence)
+			let fact = add(_, wa2:type, data:Criticality)
+			add(evidence, wa2:contains, fact)
+		}
+	}
 }

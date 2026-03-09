@@ -46,6 +46,15 @@ impl CoreEngine {
 		self.spec.as_deref()
 	}
 
+	pub fn reload_kernel(&mut self) {
+		eprintln!("WA2: Reloading kernel...");
+		self.kernel = Kernel::new();
+	}
+
+	pub fn open_document_uris(&self) -> Vec<Url> {
+		self.docs.keys().cloned().collect()
+	}
+
 	pub fn on_open(&mut self, uri: Url, text: String, language_id: String) {
 		let format = DocumentFormat::from_language_id_or_path(Some(&language_id), &uri);
 		self.docs.insert(
@@ -169,7 +178,7 @@ impl CoreEngine {
 			.into_iter()
 			.filter_map(|failure| {
 				// Get range from subject if available, else from failure entity
-            // or from its source
+				// or from its source
 				let range = failure
 					.subject
 					.and_then(|s| result.model.get_range(s))

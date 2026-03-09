@@ -222,24 +222,85 @@ impl<'m> Lower<'m> {
 			}
 
 			Item::Policy(policy) => {
-				let mut qualified_policy = policy.clone();
 				let qualified_name = self.qualify(&policy.name);
-				qualified_policy.name = qualified_name;
-				policies.push(qualified_policy);
+
+				// Qualify rule names in bindings that don't have a namespace
+				let qualified_bindings: Vec<PolicyBinding> = policy
+					.bindings
+					.iter()
+					.map(|b| {
+						let qualified_rule_name = if b.rule_name.namespace.is_some() {
+							b.rule_name.clone()
+						} else {
+							QualifiedName {
+								namespace: Some(self.current_namespace()),
+								name: b.rule_name.name.clone(),
+								span: b.rule_name.span.clone(),
+							}
+						};
+						PolicyBinding {
+							modal: b.modal,
+							rule_name: qualified_rule_name,
+							span: b.span.clone(),
+						}
+					})
+					.collect();
+
+				policies.push(Policy {
+					name: qualified_name,
+					bindings: qualified_bindings,
+					span: policy.span.clone(),
+				});
 			}
 
 			Item::Profile(profile) => {
-				let mut qualified_profile = profile.clone();
-				// Qualify the profile name
-				let ns = self.current_namespace();
-				if qualified_profile.name.namespace.is_none() && !ns.is_empty() {
-					qualified_profile.name.namespace = Some(ns);
-				}
-				profiles.push(qualified_profile);
+				// Qualify profile name if not already qualified
+				let qualified_profile_name = if profile.name.namespace.is_some() {
+					profile.name.clone()
+				} else {
+					QualifiedName {
+						namespace: Some(self.current_namespace()),
+						name: profile.name.name.clone(),
+						span: profile.name.span.clone(),
+					}
+				};
+
+				// Qualify policy names that don't have a namespace
+				let qualified_policies: Vec<QualifiedName> = profile
+					.policies
+					.iter()
+					.map(|p| {
+						if p.namespace.is_some() {
+							p.clone()
+						} else {
+							QualifiedName {
+								namespace: Some(self.current_namespace()),
+								name: p.name.clone(),
+								span: p.span.clone(),
+							}
+						}
+					})
+					.collect();
+
+				profiles.push(Profile {
+					name: qualified_profile_name,
+					policies: qualified_policies,
+					span: profile.span.clone(),
+				});
 			}
 
 			Item::ProfileSelection(selection) => {
-				*selected_profile = Some(selection.name.clone());
+				// Qualify profile selection name if not already qualified
+				let qualified_name = if selection.name.namespace.is_some() {
+					selection.name.clone()
+				} else {
+					QualifiedName {
+						namespace: Some(self.current_namespace()),
+						name: selection.name.name.clone(),
+						span: selection.name.span.clone(),
+					}
+				};
+				*selected_profile = Some(qualified_name);
 			}
 		}
 
