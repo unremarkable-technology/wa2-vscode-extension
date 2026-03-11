@@ -9,8 +9,6 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::core_engine::CoreEngine;
-use crate::iaac::cloudformation::spec_cache::SpecCacheManager;
-use crate::iaac::cloudformation::spec_source::SpecSource;
 
 /// backend: LSP-facing adapter that holds the engine and schedules work
 pub struct Backend {
@@ -95,32 +93,9 @@ impl LanguageServer for Backend {
 			let engine = engine.clone();
 
 			tokio::spawn(async move {
-				// Simple region choice for now; you can make this configurable later.
-				let region = "us-east-1"; // US East (N. Virginia)
-				//let region = "eu-west-2"; // London, matches your TZ / likely usage.
+				use crate::iaac::cloudformation::spec_cache::load_default_spec_store;
 
-				let source = match SpecSource::for_region_schemas(region) {
-					Ok(s) => s,
-					Err(err) => {
-						client
-							.log_message(
-								MessageType::ERROR,
-								format!("WA2: failed to create SpecSource for {region}: {err}"),
-							)
-							.await;
-						return;
-					}
-				};
-
-				// Decide cache directory: e.g. ~/.cache/wa2/cfn-spec
-				let cache_dir = dirs::cache_dir()
-					.unwrap_or_else(std::env::temp_dir)
-					.join("wa2")
-					.join("cfn-spec");
-
-				let manager = SpecCacheManager::new(source, &cache_dir);
-
-				match manager.load_registry_spec_store().await {
+				match load_default_spec_store().await {
 					Ok(spec_store) => {
 						{
 							let mut guard = engine.lock().unwrap();
@@ -128,22 +103,14 @@ impl LanguageServer for Backend {
 						}
 
 						client
-							.log_message(
-								MessageType::INFO,
-								format!(
-									"WA2: CloudFormation spec loaded and cached in {:?}",
-									cache_dir
-								),
-							)
+							.log_message(MessageType::INFO, "WA2: CloudFormation spec loaded")
 							.await;
 					}
 					Err(err) => {
 						client
 							.log_message(
 								MessageType::ERROR,
-								format!(
-									"WA2: failed to load CloudFormation spec (no validation from spec): {err}"
-								),
+								format!("WA2: failed to load CloudFormation spec: {err}"),
 							)
 							.await;
 					}

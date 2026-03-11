@@ -105,7 +105,6 @@ Resources:
 		projector
 			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.unwrap();
-		
 
 		eprintln!("\n=== All entities with source ranges (GetAtt test) ===");
 		for i in 0..model.entity_count() {
@@ -142,7 +141,6 @@ Resources:
 		projector
 			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.unwrap();
-		
 
 		// Check for SubVarRef nodes
 		let sub_var_ref_type = model
@@ -179,11 +177,10 @@ Resources:
 
 		let projector = AwsCfnProjector::new();
 		let uri = Url::parse("file:///tmp/test.json").unwrap();
-      let mut model = Model::bootstrap();
+		let mut model = Model::bootstrap();
 		let result = projector
 			.project_into(&mut model, cfn_text, &uri, DocumentFormat::Json)
 			.expect("project");
-		
 
 		// Verify resource was projected
 		let bucket = model.resolve("MyBucket").expect("MyBucket should exist");
@@ -217,7 +214,6 @@ Resources:
 		projector
 			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.unwrap();
-		
 
 		// Verify Ref node exists and has correct type
 		let cfn_ref_type = model.resolve("cfn:Ref").expect("cfn:Ref should exist");
@@ -264,7 +260,6 @@ Resources:
 		projector
 			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.unwrap();
-		
 
 		// Verify GetAtt node exists
 		let cfn_getatt_type = model
@@ -317,7 +312,6 @@ Resources:
 		projector
 			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.unwrap();
-		
 
 		// Check for SubVarRef nodes
 		let sub_var_ref_type = model
@@ -364,7 +358,6 @@ Resources:
 		projector
 			.project_into(&mut model, &cfn_text, &test_uri(), DocumentFormat::Yaml)
 			.unwrap();
-		
 
 		// Verify GetAtt node exists and targets MyRole
 		let cfn_getatt_type = model
@@ -383,5 +376,60 @@ Resources:
 			found_getatt,
 			"Should find a GetAtt node from dotted string form"
 		);
+	}
+
+	#[test]
+	fn project_tags_are_queryable() {
+		let cfn_text = r#"
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags:
+        - Key: DataCriticality
+          Value: Important
+"#;
+
+		let projector = AwsCfnProjector::new();
+		let mut model = Model::bootstrap();
+		projector
+			.project_into(&mut model, cfn_text, &test_uri(), DocumentFormat::Yaml)
+			.unwrap();
+
+		// Debug: print model structure
+		eprintln!(
+			"Model:\n{}",
+			crate::intents::model::print_model_as_tree(&model)
+		);
+
+		// Check DataBucket exists
+		let bucket = model
+			.resolve("DataBucket")
+			.expect("DataBucket should exist");
+
+		// Check aws:Tags predicate exists and points somewhere
+		let tags_pred = model
+			.resolve("aws:Tags")
+			.expect("aws:Tags predicate should exist");
+		let tags_container = model.get_all(bucket, tags_pred);
+		eprintln!("Tags container: {:?}", tags_container);
+		assert!(
+			!tags_container.is_empty(),
+			"DataBucket should have aws:Tags"
+		);
+
+		// Check the tag items have aws:Key
+		let container_id = tags_container[0].as_entity().expect("should be entity");
+		let children = model.children(container_id);
+		eprintln!("Tag children: {:?}", children);
+		assert!(!children.is_empty(), "Tags container should have children");
+
+		// Check aws:Key on the tag item
+		let key_pred = model.resolve("aws:Key").expect("aws:Key should exist");
+		for child in &children {
+			let keys = model.get_all(*child, key_pred);
+			eprintln!("  Child {:?} has aws:Key: {:?}", child, keys);
+		}
 	}
 }

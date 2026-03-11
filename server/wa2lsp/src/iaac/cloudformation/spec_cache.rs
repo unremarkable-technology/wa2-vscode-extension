@@ -219,3 +219,22 @@ impl SpecCacheManager {
 fn source_url(source: &SpecSource) -> String {
 	source.url().to_string()
 }
+
+/// Load the CloudFormation spec store with default settings.
+///
+/// Uses us-east-1 region and caches to ~/.cache/wa2/cfn-spec.
+/// Can be called from both the LSP backend and CLI.
+pub async fn load_default_spec_store() -> Result<Arc<SpecStore>, SpecCacheError> {
+	let region = "us-east-1";
+
+	let source = SpecSource::for_region_schemas(region)
+		.map_err(|e| SpecCacheError::Build(e.to_string()))?;
+
+	let cache_dir = dirs::cache_dir()
+		.unwrap_or_else(std::env::temp_dir)
+		.join("wa2")
+		.join("cfn-spec");
+
+	let manager = SpecCacheManager::new(source, &cache_dir);
+	manager.load_registry_spec_store().await
+}

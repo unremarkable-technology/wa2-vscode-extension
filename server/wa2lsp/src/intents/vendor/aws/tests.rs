@@ -20,7 +20,8 @@ mod tests {
 	};
 
 	fn project_and_analyse(yaml: &str) -> (Model, Vec<AssertFailure>) {
-		let kernel = Kernel::new();
+      let skip_quickstart = false;
+		let kernel = Kernel::new(skip_quickstart);
 		let uri = Url::parse("file:///test.yaml").unwrap();
 		let result = kernel
 			.analyse(

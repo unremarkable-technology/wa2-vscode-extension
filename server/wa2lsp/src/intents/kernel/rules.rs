@@ -78,6 +78,8 @@ impl RuleEngine {
 			let initial_count = model.statement_count();
 
 			for rule in rules {
+				// TODO: make into logging
+				//eprintln!("\trunning rule {}", rule.name);
 				self.current_modal = rule_modals.get(&rule.name).copied();
 				self.execute_rule(model, rule)?;
 			}
@@ -90,6 +92,8 @@ impl RuleEngine {
 
 		// Phase 3: Re-evaluate deferred musts and create failures
 		for deferred in std::mem::take(&mut self.deferred_musts) {
+         // TODO: make into logging
+			//eprintln!("\trunning rule (final) {}", deferred.rule_name);
 			let result = self.eval_expr(model, &deferred.expr, &deferred.env)?;
 			if !self.is_satisfied(&result) {
 				self.create_rich_failure(
@@ -109,6 +113,11 @@ impl RuleEngine {
 	/// Run derives to fixed-point (model building phase)
 	pub fn run_derives(&mut self, model: &mut Model, derives: &[Derive]) -> Result<(), RuleError> {
 		self.processed.clear();
+
+		for derive in derives {
+         // TODO: make into logging
+			//eprintln!("\trunning derive {}", derive.name);
+		}
 
 		for _ in 0..self.max_iterations {
 			let initial_count = model.statement_count();

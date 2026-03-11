@@ -72,7 +72,8 @@ pub struct Kernel {
 
 impl Default for Kernel {
 	fn default() -> Self {
-		Self::new()
+      let skip_quickstart = false;
+		Self::new(skip_quickstart)
 	}
 }
 
@@ -88,13 +89,13 @@ fn model_resolver(model: &Model) -> Resolver<'_> {
 }
 
 impl Kernel {
-	pub fn new() -> Self {
-		eprintln!("WA2: Kernel starting");
+	pub fn new(skip_quickstart: bool) -> Self {
+		//eprintln!("WA2: Kernel starting");
 		// Check current directory for wa2.toml
 		if let Ok(cwd) = std::env::current_dir() {
-			eprintln!("WA2: Kernel checking for config in {:?}", cwd);
+			//eprintln!("WA2: Kernel checking for config in {:?}", cwd);
 			if let Some(config) = Wa2Config::load(&cwd) {
-				eprintln!("WA2: Kernel found config");
+				//eprintln!("WA2: Kernel found config");
 
 				// Determine framework root
 				let framework_root = config
@@ -104,7 +105,7 @@ impl Kernel {
 				// Case 1: entry specified - load user's file
 				if let Some(entry_path) = config.entry_path(&cwd) {
 					if entry_path.exists() {
-						eprintln!("WA2: Kernel loading from {:?}", entry_path);
+						//eprintln!("WA2: Kernel loading from {:?}", entry_path);
 						match Self::from_file_with_framework(&entry_path, framework_root.as_deref())
 						{
 							Ok(kernel) => return kernel,
@@ -122,20 +123,61 @@ impl Kernel {
 				} else {
 					// Case 2: no entry - use framework with profile from config (or default)
 					let profile = config.profile().unwrap_or("default").to_string();
-					eprintln!("WA2: No entry specified, using profile '{}'", profile);
-					return Self::bootstrap_with_profile(framework_root.as_deref(), Some(profile));
+					//eprintln!("WA2: No entry specified, using profile '{}'", profile);
+					return Self::bootstrap_with_profile(
+						framework_root.as_deref(),
+						Some(profile),
+						skip_quickstart,
+					);
 				}
 			}
 		}
 		// Fall back to embedded bootstrap
-		Self::bootstrap_embedded()
+		Self::bootstrap_embedded(skip_quickstart)
 	}
 
 	/// Log the selected profile
 	fn log_selected_profile(&self) {
-		match &self.selected_profile {
-			Some(profile) => eprintln!("WA2: Selected profile '{}'", profile),
-			None => eprintln!("WA2: No profile selected"),
+		// match &self.selected_profile {
+		// 	Some(profile) => eprintln!("WA2: Selected profile '{}'", profile),
+		// 	None => eprintln!("WA2: No profile selected"),
+		// }
+	}
+
+	/// Override the selected profile
+	pub fn set_profile(&mut self, profile: String) -> Result<(), String> {
+		// Exact match first
+		if self.profiles.contains_key(&profile) {
+			self.selected_profile = Some(profile);
+			self.validate()?;
+			self.log_selected_profile();
+			return Ok(());
+		}
+
+		// Suffix match: find profiles ending with :$profile
+		let suffix = format!(":{}", profile);
+		let matches: Vec<_> = self
+			.profiles
+			.keys()
+			.filter(|k| k.ends_with(&suffix))
+			.collect();
+
+		match matches.len() {
+			0 => Err(format!(
+				"profile '{}' not found; available profiles: {:?}",
+				profile,
+				self.profiles.keys().collect::<Vec<_>>()
+			)),
+			1 => {
+				self.selected_profile = Some(matches[0].clone());
+				self.validate()?;
+				self.log_selected_profile();
+				Ok(())
+			}
+			_ => Err(format!(
+				"profile '{}' is ambiguous; matches: {:?}",
+				profile, matches
+			)),
 		}
 	}
 
@@ -227,9 +269,35 @@ impl Kernel {
 		Ok(kernel)
 	}
 
+	/// Load an intent file on top of the current kernel
+	pub fn load_intent(&mut self, path: &Path) -> Result<(), String> {
+		let source = std::fs::read_to_string(path)
+			.map_err(|e| format!("Could not read intent file: {}", e))?;
+
+		// Infer namespace from filename
+		let namespace = path.file_stem().and_then(|s| s.to_str()).unwrap_or("user");
+
+		Self::load_source_into(
+			&mut self.model,
+			&source,
+			namespace,
+			&mut self.rules,
+			&mut self.derives,
+			&mut self.policies,
+			&mut self.profiles,
+			&mut self.selected_profile,
+		)
+		.map_err(|e| format!("parse error in {:?}: {}", path, e))?;
+
+		self.validate()?;
+		self.log_selected_profile();
+
+		Ok(())
+	}
+
 	/// Bootstrap using embedded framework files
-	fn bootstrap_embedded() -> Self {
-		eprintln!("WA2: Using embedded framework");
+	fn bootstrap_embedded(skip_quickstart: bool) -> Self {
+		//eprintln!("WA2: Using embedded framework");
 
 		let mut model = Model::bootstrap();
 		let mut all_rules = Vec::new();
@@ -239,14 +307,17 @@ impl Kernel {
 		let mut selected_profile = None;
 
 		// Load in dependency order
-		let sources = [
+		let mut sources: Vec<(&str, &str)> = vec![
 			(EMBEDDED_BOOTSTRAP, "_internal"),
 			(EMBEDDED_CORE, "core"),
 			(EMBEDDED_AWS, "aws"),
 			(EMBEDDED_AWS_CFN, "aws:cfn"),
 			(EMBEDDED_DATA, "data"),
-			(EMBEDDED_QUICKSTART, "my"), // quickstart declares namespace my {}
 		];
+
+		if !skip_quickstart {
+			sources.push((EMBEDDED_QUICKSTART, "my"));
+		}
 
 		for (source, namespace) in sources {
 			if let Err(e) = Self::load_source_into(
@@ -262,7 +333,7 @@ impl Kernel {
 				eprintln!("WA2: Failed to load embedded {}: {}", namespace, e);
 				panic!("Embedded framework should always load");
 			}
-			eprintln!("WA2: Loaded embedded namespace '{}'", namespace);
+			//eprintln!("WA2: Loaded embedded namespace '{}'", namespace);
 		}
 
 		let kernel = Self {
@@ -285,10 +356,14 @@ impl Kernel {
 	}
 
 	/// Bootstrap with framework and explicit profile selection
-	fn bootstrap_with_profile(framework_root: Option<&Path>, profile: Option<String>) -> Self {
+	fn bootstrap_with_profile(
+		framework_root: Option<&Path>,
+		profile: Option<String>,
+		skip_quickstart: bool,
+	) -> Self {
 		// For now, use embedded framework
 		// TODO: Load from framework_root if provided
-		let mut kernel = Self::bootstrap_embedded();
+		let mut kernel = Self::bootstrap_embedded(skip_quickstart);
 
 		// Override profile selection
 		if let Some(p) = profile {
@@ -369,12 +444,16 @@ impl Kernel {
 				// No profile selected - no policies active
 				HashSet::new()
 			};
+      eprintln!("active_policy_names: {active_policy_names:?}");
 
 		for policy in &self.policies {
 			// Skip policies not in the selected profile
 			if !active_policy_names.contains(&policy.name) {
 				continue;
 			}
+         // TODO: make into logging
+         //eprintln!("\trunning policy {}", policy.name);
+
 
 			for binding in &policy.bindings {
 				let rule_name = binding.rule_name.to_string();
@@ -428,6 +507,7 @@ impl Kernel {
 			.run_with_modals(&mut model, &derives, &active_rules, &rule_modals)
 			.map_err(|e| vec![Kernel::rule_error_to_diagnostic(&e)])?;
 
+      //eprintln!("model: {}", print_model_as_tree(&model));
 		let failures = self.collect_failures(&model);
 
 		Ok(AnalysisResult { model, failures })
@@ -529,7 +609,7 @@ mod tests {
 
 	#[test]
 	fn test_embedded_bootstrap_loads() {
-		let kernel = Kernel::bootstrap_embedded();
+		let kernel = Kernel::bootstrap_embedded(false);
 
 		// Should have loaded core types
 		assert!(kernel.model.resolve("core:Store").is_some());
@@ -546,7 +626,7 @@ mod tests {
 
 	#[test]
 	fn test_derive_stores_rule() {
-		let kernel = Kernel::bootstrap_embedded();
+		let kernel = Kernel::bootstrap_embedded(false);
 		let mut model = kernel.model.clone();
 		let derives = kernel.derives.clone();
 		let rules = kernel.rules.clone();
@@ -614,7 +694,7 @@ mod tests {
 
 	#[test]
 	fn test_profile_merging() {
-		let kernel = Kernel::bootstrap_embedded();
+		let kernel = Kernel::bootstrap_embedded(false);
 
 		// core:default profile should exist
 		assert!(kernel.profiles.contains_key("core:default"));
@@ -627,7 +707,7 @@ mod tests {
 
 	#[test]
 	fn test_selected_profile() {
-		let kernel = Kernel::bootstrap_embedded();
+		let kernel = Kernel::bootstrap_embedded(false);
 
 		// quickstart selects core:default
 		assert_eq!(kernel.selected_profile, Some("core:default".to_string()));
@@ -635,7 +715,7 @@ mod tests {
 
 	#[test]
 	fn test_derives_loaded() {
-		let kernel = Kernel::bootstrap_embedded();
+		let kernel = Kernel::bootstrap_embedded(false);
 
 		// Should have derives from cfn.wa2 and quickstart.wa2
 		let derive_names: Vec<_> = kernel.derives.iter().map(|d| d.name.as_str()).collect();

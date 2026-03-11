@@ -30,14 +30,6 @@ pub struct CoreEngine {
 }
 
 impl CoreEngine {
-	// pub fn new() -> Self {
-	// 	Self {
-	// 		docs: HashMap::new(),
-	// 		spec: None,
-	// 		kernel: Kernel::new(),
-	// 	}
-	// }
-
 	pub fn set_spec_store(&mut self, spec: Arc<SpecStore>) {
 		self.spec = Some(spec);
 	}
@@ -48,7 +40,8 @@ impl CoreEngine {
 
 	pub fn reload_kernel(&mut self) {
 		eprintln!("WA2: Reloading kernel...");
-		self.kernel = Kernel::new();
+		let skip_quickstart = false;
+		self.kernel = Kernel::new(skip_quickstart);
 	}
 
 	pub fn open_document_uris(&self) -> Vec<Url> {

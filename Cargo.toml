@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "server/wa2lsp"
+    "server/wa2lsp",
+    "cli/wa2"
 ]
 
 resolver = "2"
